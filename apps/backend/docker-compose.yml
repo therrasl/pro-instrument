@@ -1,0 +1,81 @@
+name: pro-instrument
+
+x-backend: &backend
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: pro-instrument-backend:local
+  env_file:
+    - backend.env
+    - runtime.env
+  volumes:
+    - ./storage:/app/storage
+  restart: unless-stopped
+  networks:
+    - backend
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    env_file:
+      - postgres.env
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+    networks:
+      - backend
+
+  migrate:
+    <<: *backend
+    entrypoint: ["/usr/local/bin/migrate"]
+    command: ["up"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    <<: *backend
+    ports:
+      - "80:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  bitrix-worker:
+    <<: *backend
+    entrypoint: ["/usr/local/bin/bitrix-worker"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  yookassa-worker:
+    <<: *backend
+    entrypoint: ["/usr/local/bin/yookassa-worker"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  postgres_data:
+
+networks:
+  backend:
+    driver: bridge

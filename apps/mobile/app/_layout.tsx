@@ -1,9 +1,12 @@
-import { Stack } from 'expo-router';
+import * as Notifications from 'expo-notifications';
+import { Stack, useRouter, type Href } from 'expo-router';
+import { useEffect, useRef } from 'react';
 import { StatusBar } from 'react-native';
 import { SessionProvider, useSession } from '../src/auth/session';
 import { SessionSkeleton } from '../src/components/skeleton';
 import { Button, Page, StateView } from '../src/components/ui';
 import { colors } from '../src/theme/tokens';
+import { rentalIDFromNotification } from '../src/notifications/push';
 
 export default function RootLayout() {
   return (
@@ -40,6 +43,12 @@ function SessionStack() {
 
   const authenticated = status === 'authenticated' && Boolean(token);
 
+  return <AuthenticatedStack authenticated={authenticated} />;
+}
+
+function AuthenticatedStack({ authenticated }: { authenticated: boolean }) {
+  useNotificationNavigation(authenticated);
+
   return (
     <Stack
       screenOptions={{
@@ -56,4 +65,28 @@ function SessionStack() {
       </Stack.Protected>
     </Stack>
   );
+}
+
+function useNotificationNavigation(authenticated: boolean): void {
+  const router = useRouter();
+  const lastHandledID = useRef('');
+
+  useEffect(() => {
+    if (!authenticated) return;
+
+    const openRental = (response: Notifications.NotificationResponse) => {
+      const responseID = response.notification.request.identifier;
+      if (lastHandledID.current === responseID) return;
+      const rentalID = rentalIDFromNotification(response);
+      if (!rentalID) return;
+      lastHandledID.current = responseID;
+      router.push(`/(app)/rentals/${encodeURIComponent(rentalID)}` as Href);
+    };
+
+    void Notifications.getLastNotificationResponseAsync().then((response) => {
+      if (response) openRental(response);
+    });
+    const subscription = Notifications.addNotificationResponseReceivedListener(openRental);
+    return () => subscription.remove();
+  }, [authenticated, router]);
 }

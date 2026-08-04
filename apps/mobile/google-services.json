@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1029739573412",
+    "project_id": "proinstrument-b4e84",
+    "storage_bucket": "proinstrument-b4e84.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1029739573412:android:84298c6e48bb38ec9db631",
+        "android_client_info": {
+          "package_name": "ru.proinstrument.mobile"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAK--U7V1NyDRe8fx62PZ3uz0DJ-BXdHPo"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

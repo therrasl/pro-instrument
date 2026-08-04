@@ -20,6 +20,7 @@ import (
 	"github.com/pro-instrument/pro-instrument/apps/backend/internal/integrations/yookassa"
 	"github.com/pro-instrument/pro-instrument/apps/backend/internal/middleware"
 	"github.com/pro-instrument/pro-instrument/apps/backend/internal/payments"
+	"github.com/pro-instrument/pro-instrument/apps/backend/internal/push"
 	"github.com/pro-instrument/pro-instrument/apps/backend/internal/rentals"
 	"github.com/pro-instrument/pro-instrument/apps/backend/internal/verification"
 )
@@ -116,6 +117,20 @@ func run(logger *log.Logger) error {
 	)
 	paymentsHandler := payments.NewHandler(paymentsService, logger)
 	yooKassaWebhookHandler := payments.NewWebhookHandler(paymentsService, logger)
+	pushRepository := push.NewPostgresRepository(pool)
+	pushTokenService := push.NewTokenService(pushRepository)
+	pushHandler := push.NewHandler(pushTokenService, logger)
+	pushClient := push.NewExpoClient(push.DefaultExpoPushURL, &http.Client{
+		Timeout: 10 * time.Second,
+	})
+	pushDispatcher := push.NewDispatcher(
+		pushRepository,
+		pushClient,
+		2*time.Second,
+		5*time.Second,
+		5,
+		logger,
+	)
 	if settings.YooKassa.Enabled {
 		logger.Printf(
 			"YooKassa webhook endpoint: %s/api/v1/integrations/yookassa/webhook",
@@ -131,6 +146,7 @@ func run(logger *log.Logger) error {
 		bitrixEventsHandler,
 		paymentsHandler,
 		yooKassaWebhookHandler,
+		pushHandler,
 	)))
 	server := &http.Server{
 		Addr:              ":" + settings.Port,
@@ -141,6 +157,7 @@ func run(logger *log.Logger) error {
 
 	shutdownSignal, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	go pushDispatcher.Run(shutdownSignal)
 
 	serverError := make(chan error, 1)
 	go func() {

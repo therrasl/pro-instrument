@@ -13,7 +13,7 @@ func TestHealth(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/health", nil)
 	response := httptest.NewRecorder()
 
-	app.NewHandler(nil, nil, nil, nil, nil, nil, nil).ServeHTTP(response, request)
+	app.NewHandler(nil, nil, nil, nil, nil, nil, nil, nil).ServeHTTP(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d", http.StatusOK, response.Code)

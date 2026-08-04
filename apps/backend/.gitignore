@@ -3,3 +3,6 @@
 /storage/
 .env.*
 !.env.example
+backend.env
+runtime.env
+postgres.env

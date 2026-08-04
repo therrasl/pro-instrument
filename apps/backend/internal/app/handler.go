@@ -8,6 +8,7 @@ import (
 	"github.com/pro-instrument/pro-instrument/apps/backend/internal/catalog"
 	"github.com/pro-instrument/pro-instrument/apps/backend/internal/integrations/bitrix"
 	"github.com/pro-instrument/pro-instrument/apps/backend/internal/payments"
+	"github.com/pro-instrument/pro-instrument/apps/backend/internal/push"
 	"github.com/pro-instrument/pro-instrument/apps/backend/internal/rentals"
 	"github.com/pro-instrument/pro-instrument/apps/backend/internal/verification"
 )
@@ -24,6 +25,7 @@ func NewHandler(
 	bitrixEventsHandler *bitrix.EventsHandler,
 	paymentsHandler *payments.Handler,
 	yooKassaWebhookHandler *payments.WebhookHandler,
+	pushHandler *push.Handler,
 ) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(response http.ResponseWriter, _ *http.Request) {
@@ -50,6 +52,9 @@ func NewHandler(
 	}
 	if yooKassaWebhookHandler != nil {
 		yooKassaWebhookHandler.Register(mux)
+	}
+	if authHandler != nil && pushHandler != nil {
+		pushHandler.Register(mux, authHandler.BearerAuth)
 	}
 	mux.HandleFunc("/", func(response http.ResponseWriter, _ *http.Request) {
 		response.Header().Set("Content-Type", "application/json")

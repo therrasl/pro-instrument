@@ -8,6 +8,7 @@ import {
   useState,
   type PropsWithChildren,
 } from 'react';
+import { Platform } from 'react-native';
 import {
   acceptConsents as acceptClientConsents,
   getMe,
@@ -16,9 +17,12 @@ import {
   verifyCode as verifyOTP,
 } from '../api/auth';
 import { ApiError } from '../api/client';
+import { deletePushToken, registerPushToken } from '../api/push';
+import { getAuthorizedExpoPushToken } from '../notifications/push';
 import type { Client, ProfilePatch } from '../types/api';
 
 const TOKEN_KEY = 'pro-instrument.session-token';
+const PUSH_TOKEN_KEY = 'pro-instrument.expo-push-token';
 
 type SessionStatus = 'loading' | 'authenticated' | 'unauthenticated' | 'error';
 
@@ -49,11 +53,41 @@ export function SessionProvider({ children }: PropsWithChildren) {
 
   const clearSession = useCallback(async () => {
     await SecureStore.deleteItemAsync(TOKEN_KEY);
+    await SecureStore.deleteItemAsync(PUSH_TOKEN_KEY);
     setToken(null);
     setClient(null);
     setError('');
     setStatus('unauthenticated');
   }, []);
+
+  useEffect(() => {
+    if (status !== 'authenticated' || !token) return;
+    let active = true;
+
+    void (async () => {
+      try {
+        const expoPushToken = await getAuthorizedExpoPushToken();
+        if (!active || !expoPushToken) return;
+        await registerPushToken(
+          token,
+          expoPushToken,
+          Platform.OS === 'ios' ? 'ios' : 'android',
+        );
+        if (active) {
+          await SecureStore.setItemAsync(PUSH_TOKEN_KEY, expoPushToken);
+        }
+      } catch (pushError) {
+        console.warn(
+          'Push notification registration failed:',
+          pushError instanceof Error ? pushError.message : 'unknown error',
+        );
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [status, token]);
 
   useEffect(() => {
     let active = true;
@@ -173,6 +207,21 @@ export function SessionProvider({ children }: PropsWithChildren) {
     }
   }, [clearSession, token]);
 
+  const signOut = useCallback(async () => {
+    const expoPushToken = await SecureStore.getItemAsync(PUSH_TOKEN_KEY);
+    if (token && expoPushToken) {
+      try {
+        await deletePushToken(token, expoPushToken);
+      } catch (pushError) {
+        console.warn(
+          'Push notification deletion failed:',
+          pushError instanceof Error ? pushError.message : 'unknown error',
+        );
+      }
+    }
+    await clearSession();
+  }, [clearSession, token]);
+
   const value = useMemo<SessionValue>(
     () => ({
       status,
@@ -184,7 +233,7 @@ export function SessionProvider({ children }: PropsWithChildren) {
       refreshClient,
       updateProfile,
       acceptConsents,
-      signOut: clearSession,
+      signOut,
     }),
     [
       status,
@@ -196,7 +245,7 @@ export function SessionProvider({ children }: PropsWithChildren) {
       refreshClient,
       updateProfile,
       acceptConsents,
-      clearSession,
+      signOut,
     ],
   );
 

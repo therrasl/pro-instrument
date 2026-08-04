@@ -26,6 +26,9 @@ bin/
 **/.xcode.env.local
 *.log
 apps/mobile/raw-xcode-errors.txt
+**/*service-account*.json
+**/firebase-adminsdk-*.json
+!apps/mobile/google-services.json
 **/.xcode.env.local
 *.log
 apps/mobile/raw-xcode-errors.txt
