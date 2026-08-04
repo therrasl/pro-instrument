@@ -1,0 +1,3 @@
+DROP TABLE IF EXISTS tool_units;
+DROP TABLE IF EXISTS tools;
+DROP TABLE IF EXISTS categories;

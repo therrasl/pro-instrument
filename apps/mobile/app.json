@@ -1,0 +1,38 @@
+{
+  "expo": {
+    "name": "Про Инструмент",
+    "slug": "pro-instrument",
+    "scheme": "pro-instrument",
+    "version": "0.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Разрешите выбрать фотографию документа.",
+          "cameraPermission": "Разрешите сделать фотографию документа."
+        }
+      ],
+      "@react-native-community/datetimepicker",
+      "expo-font",
+      "expo-asset"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "ios": {
+      "bundleIdentifier": "ru.proinstrument.mobile",
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSCameraUsageDescription": "Разрешите сделать фотографию документа.",
+        "NSPhotoLibraryUsageDescription": "Разрешите выбрать фотографию документа."
+      }
+    },
+    "android": {
+      "package": "ru.proinstrument.mobile"
+    }
+  }
+}

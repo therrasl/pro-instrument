@@ -1,0 +1,62 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/pro-instrument/pro-instrument/apps/backend/internal/config"
+	"github.com/pro-instrument/pro-instrument/apps/backend/internal/database"
+	"github.com/pro-instrument/pro-instrument/apps/backend/internal/integrations/bitrix"
+	"github.com/pro-instrument/pro-instrument/apps/backend/internal/rentals"
+)
+
+func main() {
+	logger := log.New(os.Stdout, "", log.LstdFlags)
+	if err := run(logger); err != nil {
+		logger.Fatal(err)
+	}
+}
+
+func run(logger *log.Logger) error {
+	bitrixSettings, err := config.LoadBitrix(os.Getenv)
+	if err != nil {
+		return fmt.Errorf("load Bitrix configuration: %w", err)
+	}
+	if !bitrixSettings.Enabled {
+		logger.Print("Bitrix worker is disabled")
+		return nil
+	}
+	databaseURL, err := config.LoadDatabaseURL(os.Getenv)
+	if err != nil {
+		return fmt.Errorf("load database configuration: %w", err)
+	}
+	rentalHoldTTL, err := config.LoadRentalHoldTTL(os.Getenv)
+	if err != nil {
+		return fmt.Errorf("load rental hold configuration: %w", err)
+	}
+
+	databaseContext, cancelDatabase := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelDatabase()
+	pool, err := database.Open(databaseContext, databaseURL)
+	if err != nil {
+		return fmt.Errorf("open database: %w", err)
+	}
+	defer pool.Close()
+
+	repository := bitrix.NewPostgresRepository(pool)
+	statusService := rentals.NewStatusService(
+		rentals.NewPostgresRepository(pool),
+		rentalHoldTTL,
+	)
+	client := bitrix.NewHTTPClient(bitrixSettings.BaseURL, bitrixSettings.HTTPTimeout)
+	worker := bitrix.NewWorker(repository, client, statusService, bitrixSettings, logger)
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	return worker.Run(ctx)
+}
