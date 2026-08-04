@@ -3,6 +3,7 @@ import { Stack, useRouter, type Href } from 'expo-router';
 import { useEffect, useRef } from 'react';
 import { StatusBar } from 'react-native';
 import { SessionProvider, useSession } from '../src/auth/session';
+import { AppConfigProvider } from '../src/app-config/context';
 import { SessionSkeleton } from '../src/components/skeleton';
 import { Button, Page, StateView } from '../src/components/ui';
 import { colors } from '../src/theme/tokens';
@@ -10,10 +11,12 @@ import { rentalIDFromNotification } from '../src/notifications/push';
 
 export default function RootLayout() {
   return (
-    <SessionProvider>
-      <StatusBar barStyle="dark-content" backgroundColor={colors.surface} />
-      <SessionStack />
-    </SessionProvider>
+    <AppConfigProvider>
+      <SessionProvider>
+        <StatusBar barStyle="dark-content" backgroundColor={colors.surface} />
+        <SessionStack />
+      </SessionProvider>
+    </AppConfigProvider>
   );
 }
 

@@ -11,6 +11,7 @@ import {
   View,
 } from 'react-native';
 import { useSession } from '../../src/auth/session';
+import { useAppConfig } from '../../src/app-config/context';
 import {
   OTPInput,
   type OTPVisualState,
@@ -33,6 +34,8 @@ const SUCCESS_ANIMATION_MS = 760;
 
 export default function SignInScreen() {
   const { requestCode, verifyCode } = useSession();
+  const { config: appConfig } = useAppConfig();
+  const demoConfig = appConfig?.demo_mode ? appConfig : null;
   const [phone, setPhone] = useState('');
   const [phoneError, setPhoneError] = useState('');
   const [code, setCode] = useState('');
@@ -161,7 +164,11 @@ export default function SignInScreen() {
             <View style={styles.codeMain}>
               <View style={styles.codeHeading}>
                 <Text style={styles.title}>Введите код</Text>
-                <Text style={styles.subtitle}>Отправили шесть цифр на {phone}</Text>
+                <Text style={styles.subtitle}>
+                  {demoConfig
+                    ? `Введите демо-код для номера ${phone}`
+                    : `Отправили шесть цифр на ${phone}`}
+                </Text>
                 <Pressable
                   accessibilityRole="button"
                   disabled={loading}
@@ -185,6 +192,19 @@ export default function SignInScreen() {
                 value={code}
               />
 
+              {demoConfig ? (
+                <View
+                  accessibilityLabel={`Демо-код ${demoConfig.demo_otp_code}`}
+                  style={styles.demoBadge}
+                >
+                  <Ionicons color={colors.primary} name="flask-outline" size={17} />
+                  <Text style={styles.demoBadgeLabel}>Демо-код:</Text>
+                  <Text selectable style={styles.demoBadgeCode}>
+                    {demoConfig.demo_otp_code}
+                  </Text>
+                </View>
+              ) : null}
+
               <View style={styles.resend}>
                 {loading ? (
                   <Text accessibilityLiveRegion="polite" style={styles.timer}>
@@ -192,11 +212,13 @@ export default function SignInScreen() {
                   </Text>
                 ) : secondsLeft > 0 ? (
                   <Text accessibilityLiveRegion="polite" style={styles.timer}>
-                    {`Отправить код повторно через 0:${String(secondsLeft).padStart(2, '0')}`}
+                    {`${demoConfig ? 'Повторный запрос кода' : 'Отправить код повторно'} через 0:${String(
+                      secondsLeft,
+                    ).padStart(2, '0')}`}
                   </Text>
                 ) : (
                   <Button
-                    label="Отправить код ещё раз"
+                    label={demoConfig ? 'Запросить код ещё раз' : 'Отправить код ещё раз'}
                     onPress={() => void sendCode()}
                     variant="text"
                   />
@@ -233,7 +255,9 @@ export default function SignInScreen() {
             <View style={styles.heading}>
               <Text style={styles.title}>Войдите, чтобы начать</Text>
               <Text style={styles.subtitle}>
-                Введите номер телефона — пришлём одноразовый код в SMS.
+                {demoConfig
+                  ? 'Введите согласованный номер телефона — SMS в демо-режиме не отправляется.'
+                  : 'Введите номер телефона — пришлём одноразовый код в SMS.'}
               </Text>
             </View>
 
@@ -420,6 +444,30 @@ const styles = StyleSheet.create({
     color: colors.muted,
     fontSize: 14,
     lineHeight: 20,
+    fontVariant: ['tabular-nums'],
+  },
+  demoBadge: {
+    alignSelf: 'center',
+    minHeight: 38,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: radius.pill,
+    backgroundColor: colors.primarySoft,
+  },
+  demoBadgeLabel: {
+    color: colors.primary,
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '700',
+  },
+  demoBadgeCode: {
+    color: colors.ink,
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: '800',
+    letterSpacing: 1.2,
     fontVariant: ['tabular-nums'],
   },
 });

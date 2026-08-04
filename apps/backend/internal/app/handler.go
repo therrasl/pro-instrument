@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/pro-instrument/pro-instrument/apps/backend/internal/appconfig"
 	"github.com/pro-instrument/pro-instrument/apps/backend/internal/auth"
 	"github.com/pro-instrument/pro-instrument/apps/backend/internal/catalog"
 	"github.com/pro-instrument/pro-instrument/apps/backend/internal/integrations/bitrix"
@@ -26,6 +27,7 @@ func NewHandler(
 	paymentsHandler *payments.Handler,
 	yooKassaWebhookHandler *payments.WebhookHandler,
 	pushHandler *push.Handler,
+	appConfigHandler *appconfig.Handler,
 ) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(response http.ResponseWriter, _ *http.Request) {
@@ -55,6 +57,9 @@ func NewHandler(
 	}
 	if authHandler != nil && pushHandler != nil {
 		pushHandler.Register(mux, authHandler.BearerAuth)
+	}
+	if appConfigHandler != nil {
+		appConfigHandler.Register(mux)
 	}
 	mux.HandleFunc("/", func(response http.ResponseWriter, _ *http.Request) {
 		response.Header().Set("Content-Type", "application/json")

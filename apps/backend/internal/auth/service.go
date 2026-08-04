@@ -47,6 +47,22 @@ type Service struct {
 	now           func() time.Time
 	randomCode    func() (string, error)
 	randomToken   func() (string, error)
+	demoEnabled   bool
+	demoCode      string
+	demoPhones    map[string]struct{}
+}
+
+type ServiceOption func(*Service)
+
+func WithDemoOTP(code string, phones []string) ServiceOption {
+	return func(service *Service) {
+		service.demoEnabled = true
+		service.demoCode = code
+		service.demoPhones = make(map[string]struct{}, len(phones))
+		for _, phone := range phones {
+			service.demoPhones[phone] = struct{}{}
+		}
+	}
 }
 
 func NewService(
@@ -55,8 +71,9 @@ func NewService(
 	otpTTL time.Duration,
 	sessionTTL time.Duration,
 	otpHashSecret string,
+	options ...ServiceOption,
 ) *Service {
-	return &Service{
+	service := &Service{
 		repository:    repository,
 		smsSender:     smsSender,
 		otpTTL:        otpTTL,
@@ -66,6 +83,10 @@ func NewService(
 		randomCode:    generateCode,
 		randomToken:   generateToken,
 	}
+	for _, option := range options {
+		option(service)
+	}
+	return service
 }
 
 func (service *Service) RequestCode(ctx context.Context, rawPhone string) error {
@@ -77,6 +98,13 @@ func (service *Service) RequestCode(ctx context.Context, rawPhone string) error 
 	code, err := service.randomCode()
 	if err != nil {
 		return fmt.Errorf("generate verification code: %w", err)
+	}
+	if service.demoEnabled {
+		if _, allowed := service.demoPhones[phone]; allowed {
+			code = service.demoCode
+		} else if code == service.demoCode {
+			code = nextVerificationCode(code)
+		}
 	}
 
 	now := service.now().UTC()
@@ -91,11 +119,22 @@ func (service *Service) RequestCode(ctx context.Context, rawPhone string) error 
 		return err
 	}
 
+	if service.demoEnabled {
+		return nil
+	}
 	if err := service.smsSender.SendCode(ctx, phone, code); err != nil {
 		return fmt.Errorf("send verification code: %w", err)
 	}
 
 	return nil
+}
+
+func nextVerificationCode(code string) string {
+	value := 0
+	for _, character := range code {
+		value = value*10 + int(character-'0')
+	}
+	return fmt.Sprintf("%06d", (value+1)%1_000_000)
 }
 
 func (service *Service) VerifyCode(ctx context.Context, rawPhone string, code string) (Session, error) {

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/pro-instrument/pro-instrument/apps/backend/internal/app"
+	"github.com/pro-instrument/pro-instrument/apps/backend/internal/appconfig"
 	"github.com/pro-instrument/pro-instrument/apps/backend/internal/auth"
 	"github.com/pro-instrument/pro-instrument/apps/backend/internal/catalog"
 	"github.com/pro-instrument/pro-instrument/apps/backend/internal/config"
@@ -57,14 +58,23 @@ func run(logger *log.Logger) error {
 	}
 	authRepository := auth.NewPostgresRepository(pool)
 	smsSender := auth.NewDevelopmentSMSSender(logger)
+	authServiceOptions := make([]auth.ServiceOption, 0, 1)
+	if settings.Demo.Enabled {
+		authServiceOptions = append(
+			authServiceOptions,
+			auth.WithDemoOTP(settings.Demo.OTPCode, settings.Demo.OTPPhones),
+		)
+	}
 	authService := auth.NewService(
 		authRepository,
 		smsSender,
 		settings.OTPTTL,
 		settings.SessionTTL,
 		settings.OTPHashSecret,
+		authServiceOptions...,
 	)
 	authHandler := auth.NewHandler(authService, logger)
+	appConfigHandler := appconfig.NewHandler(settings.Demo.Enabled, settings.Demo.OTPCode)
 
 	fileStorage, err := verification.NewLocalFileStorage(settings.StoragePath)
 	if err != nil {
@@ -147,6 +157,7 @@ func run(logger *log.Logger) error {
 		paymentsHandler,
 		yooKassaWebhookHandler,
 		pushHandler,
+		appConfigHandler,
 	)))
 	server := &http.Server{
 		Addr:              ":" + settings.Port,

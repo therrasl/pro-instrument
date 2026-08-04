@@ -95,6 +95,78 @@ func TestLoadAuthOverrides(t *testing.T) {
 	}
 }
 
+func TestLoadDemoConfigurationNormalizesPhones(t *testing.T) {
+	values := map[string]string{
+		"DATABASE_URL":      "postgres://localhost/test",
+		"OTP_HASH_SECRET":   "0123456789abcdef0123456789abcdef",
+		"DEMO_MODE_ENABLED": "true",
+		"DEMO_OTP_CODE":     "654321",
+		"DEMO_OTP_PHONES":   "8 (999) 123-45-67, +4915112345678, +7 999 123 45 67",
+	}
+	settings, err := config.Load(func(key string) string { return values[key] })
+	if err != nil {
+		t.Fatalf("load demo config: %v", err)
+	}
+	if !settings.Demo.Enabled || settings.Demo.OTPCode != "654321" ||
+		len(settings.Demo.OTPPhones) != 2 ||
+		settings.Demo.OTPPhones[0] != "+79991234567" ||
+		settings.Demo.OTPPhones[1] != "+4915112345678" {
+		t.Fatalf("unexpected demo config: %#v", settings.Demo)
+	}
+}
+
+func TestLoadRejectsInvalidDemoConfiguration(t *testing.T) {
+	base := map[string]string{
+		"DATABASE_URL":      "postgres://localhost/test",
+		"OTP_HASH_SECRET":   "0123456789abcdef0123456789abcdef",
+		"DEMO_MODE_ENABLED": "true",
+		"DEMO_OTP_CODE":     "654321",
+		"DEMO_OTP_PHONES":   "+79991234567",
+	}
+	tests := []struct {
+		name  string
+		key   string
+		value string
+		want  string
+	}{
+		{name: "invalid flag", key: "DEMO_MODE_ENABLED", value: "sometimes", want: "DEMO_MODE_ENABLED"},
+		{name: "missing code", key: "DEMO_OTP_CODE", value: "", want: "DEMO_OTP_CODE"},
+		{name: "non numeric code", key: "DEMO_OTP_CODE", value: "12AB56", want: "DEMO_OTP_CODE"},
+		{name: "missing phones", key: "DEMO_OTP_PHONES", value: "", want: "DEMO_OTP_PHONES"},
+		{name: "invalid phone", key: "DEMO_OTP_PHONES", value: "not-a-phone", want: "DEMO_OTP_PHONES"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			values := make(map[string]string, len(base))
+			for key, value := range base {
+				values[key] = value
+			}
+			values[test.key] = test.value
+			_, err := config.Load(func(key string) string { return values[key] })
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("expected %s error, got %v", test.want, err)
+			}
+		})
+	}
+}
+
+func TestLoadDisabledDemoModeIgnoresDemoValues(t *testing.T) {
+	values := map[string]string{
+		"DATABASE_URL":      "postgres://localhost/test",
+		"OTP_HASH_SECRET":   "0123456789abcdef0123456789abcdef",
+		"DEMO_MODE_ENABLED": "false",
+		"DEMO_OTP_CODE":     "not-used",
+		"DEMO_OTP_PHONES":   "not-used",
+	}
+	settings, err := config.Load(func(key string) string { return values[key] })
+	if err != nil {
+		t.Fatalf("disabled demo mode changed existing config behavior: %v", err)
+	}
+	if settings.Demo.Enabled || settings.Demo.OTPCode != "" || len(settings.Demo.OTPPhones) != 0 {
+		t.Fatalf("unexpected disabled demo config: %#v", settings.Demo)
+	}
+}
+
 func TestLoadRejectsInvalidTTL(t *testing.T) {
 	values := map[string]string{
 		"DATABASE_URL":    "postgres://localhost/test",

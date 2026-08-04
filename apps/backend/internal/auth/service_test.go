@@ -103,7 +103,7 @@ func TestNormalizePhoneRejectsMalformedInput(t *testing.T) {
 	}
 }
 
-func TestRequestCodeStoresHMACAndSendsCode(t *testing.T) {
+func TestDisabledDemoModePreservesExistingOTPFlow(t *testing.T) {
 	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
 	sender := &fakeSMSSender{}
 	var storedHash []byte
@@ -140,6 +140,116 @@ func TestRequestCodeStoresHMACAndSendsCode(t *testing.T) {
 	}
 	if bytes.Equal(storedHash, []byte("123456")) || !bytes.Equal(storedHash, hashOTP([]byte(testHashSecret), sender.phone, sender.code)) {
 		t.Fatal("verification code was not stored as the expected HMAC")
+	}
+}
+
+func TestDemoOTPAllowedPhoneUsesFixedHashedCodeWithoutSMS(t *testing.T) {
+	sender := &fakeSMSSender{}
+	var storedHash []byte
+	repository := fakeRepository{
+		createCode: func(
+			_ context.Context,
+			phone string,
+			codeHash []byte,
+			_ time.Time,
+			_ time.Time,
+			_ time.Duration,
+		) error {
+			if phone != "+79991234567" {
+				t.Fatalf("phone was not normalized: %q", phone)
+			}
+			storedHash = append([]byte(nil), codeHash...)
+			return nil
+		},
+	}
+	service := NewService(
+		repository,
+		sender,
+		5*time.Minute,
+		24*time.Hour,
+		testHashSecret,
+		WithDemoOTP("654321", []string{"+79991234567"}),
+	)
+	service.randomCode = func() (string, error) { return "123456", nil }
+
+	if err := service.RequestCode(context.Background(), "8 (999) 123-45-67"); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(storedHash, hashOTP([]byte(testHashSecret), "+79991234567", "654321")) {
+		t.Fatal("allowed demo phone did not receive the fixed hashed code")
+	}
+	if sender.phone != "" || sender.code != "" {
+		t.Fatal("demo mode must not call the SMS sender")
+	}
+}
+
+func TestDemoOTPForeignPhoneCannotUseFixedCode(t *testing.T) {
+	var storedHash []byte
+	repository := fakeRepository{
+		createCode: func(
+			_ context.Context,
+			_ string,
+			codeHash []byte,
+			_ time.Time,
+			_ time.Time,
+			_ time.Duration,
+		) error {
+			storedHash = append([]byte(nil), codeHash...)
+			return nil
+		},
+	}
+	service := NewService(
+		repository,
+		&fakeSMSSender{},
+		5*time.Minute,
+		24*time.Hour,
+		testHashSecret,
+		WithDemoOTP("654321", []string{"+79991234567"}),
+	)
+	service.randomCode = func() (string, error) { return "654321", nil }
+
+	if err := service.RequestCode(context.Background(), "+79990000000"); err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(storedHash, hashOTP([]byte(testHashSecret), "+79990000000", "654321")) {
+		t.Fatal("foreign phone received the fixed demo code")
+	}
+}
+
+func TestDemoOTPRejectsWrongCode(t *testing.T) {
+	expectedHash := hashOTP([]byte(testHashSecret), "+79991234567", "654321")
+	repository := fakeRepository{
+		verifyCode: func(
+			_ context.Context,
+			_ string,
+			codeHash []byte,
+			_ []byte,
+			_ time.Time,
+			_ time.Time,
+			_ int,
+		) (Client, error) {
+			if !bytes.Equal(codeHash, expectedHash) {
+				return Client{}, ErrInvalidCode
+			}
+			return Client{}, nil
+		},
+	}
+	service := NewService(
+		repository,
+		&fakeSMSSender{},
+		5*time.Minute,
+		24*time.Hour,
+		testHashSecret,
+		WithDemoOTP("654321", []string{"+79991234567"}),
+	)
+	service.randomToken = func() (string, error) { return "session-token", nil }
+
+	if _, err := service.VerifyCode(
+		context.Background(),
+		"+79991234567",
+		"111111",
+	); !errors.Is(err, ErrInvalidCode) {
+		t.Fatalf("expected wrong demo code to fail, got %v", err)
 	}
 }
 

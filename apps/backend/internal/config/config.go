@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/pro-instrument/pro-instrument/apps/backend/internal/auth"
 )
 
 const (
@@ -44,6 +46,13 @@ type Config struct {
 	CourierFee    int64
 	Bitrix        BitrixConfig
 	YooKassa      YooKassaConfig
+	Demo          DemoConfig
+}
+
+type DemoConfig struct {
+	Enabled   bool
+	OTPCode   string
+	OTPPhones []string
 }
 
 type BitrixConfig struct {
@@ -165,6 +174,10 @@ func Load(lookup LookupEnv) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	demoConfig, err := loadDemoConfig(lookup)
+	if err != nil {
+		return Config{}, err
+	}
 
 	return Config{
 		DatabaseURL:   databaseURL,
@@ -179,7 +192,52 @@ func Load(lookup LookupEnv) (Config, error) {
 		CourierFee:    courierFee,
 		Bitrix:        bitrixConfig,
 		YooKassa:      yooKassaConfig,
+		Demo:          demoConfig,
 	}, nil
+}
+
+func loadDemoConfig(lookup LookupEnv) (DemoConfig, error) {
+	enabled := false
+	if value := strings.TrimSpace(lookup("DEMO_MODE_ENABLED")); value != "" {
+		parsed, err := strconv.ParseBool(value)
+		if err != nil {
+			return DemoConfig{}, errors.New("DEMO_MODE_ENABLED must be a boolean")
+		}
+		enabled = parsed
+	}
+	if !enabled {
+		return DemoConfig{}, nil
+	}
+
+	code := strings.TrimSpace(lookup("DEMO_OTP_CODE"))
+	if len(code) != 6 {
+		return DemoConfig{}, errors.New("DEMO_OTP_CODE must contain exactly 6 digits when demo mode is enabled")
+	}
+	for _, character := range code {
+		if character < '0' || character > '9' {
+			return DemoConfig{}, errors.New("DEMO_OTP_CODE must contain exactly 6 digits when demo mode is enabled")
+		}
+	}
+
+	rawPhones := strings.TrimSpace(lookup("DEMO_OTP_PHONES"))
+	if rawPhones == "" {
+		return DemoConfig{}, errors.New("DEMO_OTP_PHONES must contain at least one phone when demo mode is enabled")
+	}
+	phones := make([]string, 0)
+	seen := make(map[string]struct{})
+	for index, rawPhone := range strings.Split(rawPhones, ",") {
+		phone, err := auth.NormalizePhone(strings.TrimSpace(rawPhone))
+		if err != nil {
+			return DemoConfig{}, fmt.Errorf("DEMO_OTP_PHONES entry %d is invalid", index+1)
+		}
+		if _, exists := seen[phone]; exists {
+			continue
+		}
+		seen[phone] = struct{}{}
+		phones = append(phones, phone)
+	}
+
+	return DemoConfig{Enabled: true, OTPCode: code, OTPPhones: phones}, nil
 }
 
 func LoadDatabaseURL(lookup LookupEnv) (string, error) {
