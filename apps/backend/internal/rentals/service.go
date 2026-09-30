@@ -27,6 +27,7 @@ var (
 	ErrInvalidExtensionDate = errors.New("new end date must be after current end date")
 	ErrExtensionUnavailable = errors.New("tool is not available for requested extension period")
 	ErrInvalidPhotoPhase    = errors.New("invalid inspection photo phase")
+	ErrPhotoPhaseNotAllowed = errors.New("inspection photo phase is not allowed for current rental status")
 	ErrInvalidPhotoType     = errors.New("invalid inspection photo type")
 	ErrInvalidPhotoFile     = errors.New("invalid inspection photo file")
 	ErrPhotoNotFound        = errors.New("inspection photo not found")
@@ -544,6 +545,17 @@ func (service *Service) UploadInspectionPhoto(
 	phase = strings.ToLower(strings.TrimSpace(phase))
 	if phase != PhotoPhaseHandover && phase != PhotoPhaseReturn {
 		return InspectionPhoto{}, ErrInvalidPhotoPhase
+	}
+
+	switch phase {
+	case PhotoPhaseHandover:
+		if rental.Status != StatusRented && rental.Status != StatusReady && rental.Status != StatusHandedToCourier {
+			return InspectionPhoto{}, fmt.Errorf("%w: handover photos are only allowed during equipment handover (status: %s)", ErrPhotoPhaseNotAllowed, rental.Status)
+		}
+	case PhotoPhaseReturn:
+		if rental.Status != StatusAwaitingReturn && rental.Status != StatusInspection {
+			return InspectionPhoto{}, fmt.Errorf("%w: return photos are only allowed during equipment return (status: %s)", ErrPhotoPhaseNotAllowed, rental.Status)
+		}
 	}
 
 	photoType = strings.ToLower(strings.TrimSpace(photoType))

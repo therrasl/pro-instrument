@@ -31,6 +31,7 @@ import {
   createExtension,
   createRentalPayment,
   getExtensionQuote,
+  getInspectionPhotos,
   getRental,
 } from '../../../src/api/rentals';
 import { useSession } from '../../../src/auth/session';
@@ -66,7 +67,7 @@ import {
   spacing,
   typography,
 } from '../../../src/theme/tokens';
-import type { ExtensionQuote, Rental, Tool } from '../../../src/types/api';
+import type { ExtensionQuote, InspectionPhoto, Rental, Tool } from '../../../src/types/api';
 import { formatMoney } from '../../../src/utils/format';
 import { copyText } from '../../../src/utils/clipboard';
 
@@ -121,6 +122,7 @@ export default function RentalDetailScreen() {
   const [quotingExtension, setQuotingExtension] = useState(false);
   const [extending, setExtending] = useState(false);
   const [extensionError, setExtensionError] = useState('');
+  const [inspectionPhotos, setInspectionPhotos] = useState<InspectionPhoto[]>([]);
   const paymentInFlight = useRef(false);
   const latestRequest = useRef(0);
   const statusPollAttempts = useRef(0);
@@ -161,6 +163,26 @@ export default function RentalDetailScreen() {
             setTool(nextTool);
           } catch {
             // Статус и условия заказа остаются доступны без каталожного медиа.
+          }
+        }
+
+        if (
+          [
+            'ready',
+            'handed_to_courier',
+            'rented',
+            'awaiting_return',
+            'inspection',
+            'completed',
+          ].includes(nextRental.status)
+        ) {
+          try {
+            const photos = await getInspectionPhotos(token, id);
+            if (requestID === latestRequest.current) {
+              setInspectionPhotos(photos);
+            }
+          } catch {
+            // Фотофиксация опциональна для экрана заказа
           }
         }
       } catch (requestError) {
@@ -484,6 +506,24 @@ export default function RentalDetailScreen() {
     'inspection',
     'completed',
   ].includes(rental.status);
+  const handoverPhotosCount = inspectionPhotos.filter(
+    (p) => p.phase === 'handover',
+  ).length;
+  const returnPhotosCount = inspectionPhotos.filter(
+    (p) => p.phase === 'return',
+  ).length;
+  const isHandoverStage = [
+    'ready',
+    'handed_to_courier',
+    'rented',
+  ].includes(rental.status);
+  const isReturnStage = [
+    'awaiting_return',
+    'inspection',
+  ].includes(rental.status);
+  const requiresHandoverInspection = isHandoverStage && handoverPhotosCount < 5;
+  const requiresReturnInspection = isReturnStage && returnPhotosCount < 5;
+
   const paymentDeadlinePassed =
     rental.status === 'awaiting_payment' && remainingPaymentSeconds === 0;
   const showTransactionArea =
@@ -529,6 +569,52 @@ export default function RentalDetailScreen() {
             <Text style={styles.nextActionText}>{presentation.nextAction}</Text>
           </View>
         </View>
+
+        {requiresHandoverInspection ? (
+          <View style={styles.urgentInspectionCallout}>
+            <View style={styles.urgentInspectionRow}>
+              <View style={styles.urgentInspectionIconBox}>
+                <Ionicons name="camera" size={24} color="#D97706" />
+              </View>
+              <View style={styles.urgentInspectionTextBox}>
+                <Text style={styles.urgentInspectionTitle}>
+                  Обязательно сфотографируйте инструмент при получении
+                </Text>
+                <Text style={styles.urgentInspectionText}>
+                  Зафиксировано {handoverPhotosCount} из 5 обязательных ракурсов. Сделайте снимки на камеру для сохранения залога.
+                </Text>
+              </View>
+            </View>
+            <Button
+              label={`Открыть камеру для осмотра (${handoverPhotosCount}/5)`}
+              variant="primary"
+              onPress={() => router.push(`/(app)/rentals/${rental.id}/photos` as never)}
+            />
+          </View>
+        ) : null}
+
+        {requiresReturnInspection ? (
+          <View style={[styles.urgentInspectionCallout, styles.urgentInspectionCalloutError]}>
+            <View style={styles.urgentInspectionRow}>
+              <View style={[styles.urgentInspectionIconBox, styles.urgentInspectionIconBoxError]}>
+                <Ionicons name="camera" size={24} color={colors.error} />
+              </View>
+              <View style={styles.urgentInspectionTextBox}>
+                <Text style={styles.urgentInspectionTitle}>
+                  Обязательно сфотографируйте инструмент перед сдачей
+                </Text>
+                <Text style={styles.urgentInspectionText}>
+                  Зафиксировано {returnPhotosCount} из 5 обязательных ракурсов. Фотографии возврата необходимы для возврата обеспечительного платежа.
+                </Text>
+              </View>
+            </View>
+            <Button
+              label={`Сфотографировать возврат на камеру (${returnPhotosCount}/5)`}
+              variant="primary"
+              onPress={() => router.push(`/(app)/rentals/${rental.id}/photos` as never)}
+            />
+          </View>
+        ) : null}
 
         <Section title="Статус заказа">
           <View style={styles.timeline}>
@@ -647,7 +733,13 @@ export default function RentalDetailScreen() {
               />
               <CompactAction
                 icon="camera-outline"
-                label="Фото"
+                label={
+                  requiresHandoverInspection
+                    ? `Фото (${handoverPhotosCount}/5)`
+                    : requiresReturnInspection
+                      ? `Возврат (${returnPhotosCount}/5)`
+                      : 'Фото'
+                }
                 onPress={() => router.push(`/(app)/rentals/${rental.id}/photos` as never)}
               />
               <CompactAction
@@ -673,19 +765,65 @@ export default function RentalDetailScreen() {
 
             {canInspect ? (
               <Pressable
-                style={styles.inspectionCard}
+                style={[
+                  styles.inspectionCard,
+                  (requiresHandoverInspection || requiresReturnInspection) &&
+                    styles.inspectionCardUrgent,
+                ]}
                 onPress={() => router.push(`/(app)/rentals/${rental.id}/photos` as never)}
               >
-                <View style={styles.inspectionIconBox}>
-                  <Ionicons name="camera-outline" size={20} color={colors.primary} />
+                <View
+                  style={[
+                    styles.inspectionIconBox,
+                    (requiresHandoverInspection || requiresReturnInspection) &&
+                      styles.inspectionIconBoxUrgent,
+                  ]}
+                >
+                  <Ionicons
+                    name={
+                      requiresHandoverInspection || requiresReturnInspection
+                        ? 'camera'
+                        : 'camera-outline'
+                    }
+                    size={20}
+                    color={
+                      requiresHandoverInspection || requiresReturnInspection
+                        ? colors.white
+                        : colors.primary
+                    }
+                  />
                 </View>
                 <View style={styles.inspectionTextBox}>
-                  <Text style={styles.inspectionTitle}>Фотофиксация инструмента</Text>
+                  <Text
+                    style={[
+                      styles.inspectionTitle,
+                      (requiresHandoverInspection || requiresReturnInspection) &&
+                        styles.inspectionTitleUrgent,
+                    ]}
+                  >
+                    {requiresHandoverInspection
+                      ? 'Осмотр при получении'
+                      : requiresReturnInspection
+                        ? 'Осмотр перед возвратом'
+                        : 'Фотофиксация инструмента'}
+                  </Text>
                   <Text style={styles.inspectionSubtitle}>
-                    5 ракурсов для проверки сохранности оборудования
+                    {requiresHandoverInspection
+                      ? `Обязательно: снято ${handoverPhotosCount} из 5 ракурсов`
+                      : requiresReturnInspection
+                        ? `Обязательно: снято ${returnPhotosCount} из 5 ракурсов`
+                        : 'Все ракурсы зафиксированы и защищены'}
                   </Text>
                 </View>
-                <Ionicons name="chevron-forward" size={18} color={colors.muted} />
+                <Ionicons
+                  name="chevron-forward"
+                  size={18}
+                  color={
+                    requiresHandoverInspection || requiresReturnInspection
+                      ? colors.error
+                      : colors.muted
+                  }
+                />
               </Pressable>
             ) : null}
           </View>
@@ -1485,6 +1623,49 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 16,
   },
+  urgentInspectionCallout: {
+    backgroundColor: '#FFFBEB',
+    borderColor: '#FCD34D',
+    borderWidth: 1.5,
+    borderRadius: radius.md,
+    padding: spacing.md,
+    gap: spacing.md,
+  },
+  urgentInspectionCalloutError: {
+    backgroundColor: '#FEF2F2',
+    borderColor: '#FCA5A5',
+  },
+  urgentInspectionRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.sm,
+  },
+  urgentInspectionIconBox: {
+    width: 40,
+    height: 40,
+    borderRadius: radius.sm,
+    backgroundColor: '#FEF3C7',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  urgentInspectionIconBoxError: {
+    backgroundColor: '#FEE2E2',
+  },
+  urgentInspectionTextBox: {
+    flex: 1,
+    gap: 3,
+  },
+  urgentInspectionTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: colors.ink,
+    lineHeight: 20,
+  },
+  urgentInspectionText: {
+    ...typography.caption,
+    color: colors.muted,
+    lineHeight: 18,
+  },
   inspectionCard: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1496,6 +1677,10 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
     marginTop: spacing.xs,
   },
+  inspectionCardUrgent: {
+    borderColor: '#F87171',
+    backgroundColor: '#FEF2F2',
+  },
   inspectionIconBox: {
     width: 36,
     height: 36,
@@ -1503,6 +1688,9 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primarySoft,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  inspectionIconBoxUrgent: {
+    backgroundColor: colors.error,
   },
   inspectionTextBox: {
     flex: 1,
@@ -1512,6 +1700,9 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
     color: colors.ink,
+  },
+  inspectionTitleUrgent: {
+    color: colors.error,
   },
   inspectionSubtitle: {
     fontSize: 12,

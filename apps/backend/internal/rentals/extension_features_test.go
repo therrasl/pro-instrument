@@ -3,6 +3,7 @@ package rentals
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -219,5 +220,56 @@ func TestUploadInspectionPhoto(t *testing.T) {
 	)
 	if err != ErrInvalidPhotoType {
 		t.Errorf("expected ErrInvalidPhotoType, got %v", err)
+	}
+
+	// In status rented, return phase must be rejected
+	_, err = service.UploadInspectionPhoto(
+		context.Background(),
+		testClientID,
+		testRentalID,
+		PhotoPhaseReturn,
+		PhotoTypeBody,
+		"image/jpeg",
+		"camera.jpg",
+		"",
+		int64(len(photoData)),
+		bytes.NewReader(photoData),
+	)
+	if !errors.Is(err, ErrPhotoPhaseNotAllowed) {
+		t.Errorf("expected ErrPhotoPhaseNotAllowed for return phase on rented tool, got %v", err)
+	}
+
+	// In status awaiting_return, return phase allowed, handover phase rejected
+	activeRental.Status = StatusAwaitingReturn
+	_, err = service.UploadInspectionPhoto(
+		context.Background(),
+		testClientID,
+		testRentalID,
+		PhotoPhaseHandover,
+		PhotoTypeBody,
+		"image/jpeg",
+		"camera.jpg",
+		"",
+		int64(len(photoData)),
+		bytes.NewReader(photoData),
+	)
+	if !errors.Is(err, ErrPhotoPhaseNotAllowed) {
+		t.Errorf("expected ErrPhotoPhaseNotAllowed for handover phase during return, got %v", err)
+	}
+
+	_, err = service.UploadInspectionPhoto(
+		context.Background(),
+		testClientID,
+		testRentalID,
+		PhotoPhaseReturn,
+		PhotoTypeBody,
+		"image/jpeg",
+		"camera.jpg",
+		"",
+		int64(len(photoData)),
+		bytes.NewReader(photoData),
+	)
+	if err != nil {
+		t.Errorf("expected success for return phase during return, got %v", err)
 	}
 }

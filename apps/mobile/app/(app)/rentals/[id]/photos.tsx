@@ -96,12 +96,11 @@ export default function RentalPhotosScreen() {
       setRental(rentalData);
       setPhotos(photosData);
 
-      // Auto-select return phase if rental is returning or completed
-      if (
-        !isRefresh &&
-        ['awaiting_return', 'inspection', 'completed'].includes(rentalData.status)
-      ) {
+      // Auto-select phase strictly based on rental operational stage
+      if (['awaiting_return', 'inspection'].includes(rentalData.status)) {
         setPhase('return');
+      } else {
+        setPhase('handover');
       }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Не удалось загрузить фотографии.');
@@ -115,35 +114,58 @@ export default function RentalPhotosScreen() {
     void load();
   }, [load]);
 
-  const handlePickAndUpload = async (slotType: PhotoType, source: 'camera' | 'library') => {
+  // Stage checks
+  const isHandoverStage = Boolean(
+    rental && ['rented', 'ready', 'handed_to_courier'].includes(rental.status),
+  );
+  const isReturnStage = Boolean(
+    rental && ['awaiting_return', 'inspection'].includes(rental.status),
+  );
+
+  // An inspection phase is ONLY editable if the current rental status matches it:
+  // - Handover photos can ONLY be taken during handover stage
+  // - Return photos can ONLY be taken during return stage
+  const isPhaseEditable =
+    (phase === 'handover' && isHandoverStage) ||
+    (phase === 'return' && isReturnStage);
+
+  const handleCameraCapture = async (slotType: PhotoType) => {
     if (!token || !rentalID || uploadingSlot) return;
 
-    try {
-      const permission =
-        source === 'camera'
-          ? await ImagePicker.requestCameraPermissionsAsync()
-          : await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!isPhaseEditable) {
+      Alert.alert(
+        'Редактирование недоступно',
+        phase === 'handover'
+          ? 'Фотофиксация при выдаче завершена и зафиксирована.'
+          : 'Фотофиксация при возврате доступна только на этапе сдачи инструмента.',
+      );
+      return;
+    }
 
+    try {
+      const permission = await ImagePicker.requestCameraPermissionsAsync();
       if (!permission.granted) {
         Alert.alert(
-          'Нет доступа',
-          source === 'camera'
-            ? 'Предоставьте приложению доступ к камере в настройках устройства.'
-            : 'Предоставьте приложению доступ к галерее в настройках устройства.',
+          'Нет доступа к камере',
+          'Предоставьте приложению доступ к камере в настройках устройства для фиксации состояния инструмента.',
         );
         return;
       }
 
-      const result =
-        source === 'camera'
-          ? await ImagePicker.launchCameraAsync({
-              mediaTypes: ['images'],
-              quality: 0.85,
-            })
-          : await ImagePicker.launchImageLibraryAsync({
-              mediaTypes: ['images'],
-              quality: 0.85,
-            });
+      let result: ImagePicker.ImagePickerResult;
+      try {
+        result = await ImagePicker.launchCameraAsync({
+          mediaTypes: ['images'],
+          quality: 0.85,
+        });
+      } catch (cameraErr) {
+        Alert.alert(
+          'Камера недоступна',
+          'Не удалось запустить камеру на устройстве: ' +
+            (cameraErr instanceof Error ? cameraErr.message : String(cameraErr)),
+        );
+        return;
+      }
 
       if (result.canceled || !result.assets || result.assets.length === 0) {
         return;
@@ -174,7 +196,7 @@ export default function RentalPhotosScreen() {
       });
     } catch (cause) {
       Alert.alert(
-        'Ошибка загрузки',
+        'Ошибка сохранения',
         cause instanceof Error ? cause.message : 'Не удалось сохранить фотографию.',
       );
     } finally {
@@ -217,7 +239,9 @@ export default function RentalPhotosScreen() {
         <View style={styles.header}>
           <Title compact>Фотофиксация инструмента</Title>
           <Text style={styles.intro}>
-            {rental?.order_number ? `Заказ №${rental.order_number}` : 'Контроль состояния оборудования'}
+            {rental?.order_number
+              ? `Заказ №${rental.order_number}`
+              : 'Фиксация состояния инструмента в реальном времени'}
           </Text>
         </View>
 
@@ -243,48 +267,104 @@ export default function RentalPhotosScreen() {
             >
               При выдаче
             </Text>
+            {isHandoverStage && phasePhotosCount < 5 ? (
+              <View style={styles.phaseAlertDot} />
+            ) : null}
           </Pressable>
 
           <Pressable
             style={[
               styles.phaseButton,
               phase === 'return' && styles.phaseButtonActive,
+              isHandoverStage && styles.phaseButtonDisabled,
             ]}
-            onPress={() => setPhase('return')}
+            onPress={() => {
+              if (isHandoverStage) {
+                Alert.alert(
+                  'Этап возврата недоступен',
+                  'Фотофиксация при возврате станет доступна только на этапе сдачи инструмента.',
+                );
+                return;
+              }
+              setPhase('return');
+            }}
           >
             <Ionicons
-              name="return-down-back-outline"
+              name={isHandoverStage ? 'lock-closed-outline' : 'return-down-back-outline'}
               size={18}
-              color={phase === 'return' ? colors.white : colors.ink}
+              color={
+                phase === 'return'
+                  ? colors.white
+                  : isHandoverStage
+                    ? colors.muted
+                    : colors.ink
+              }
             />
             <Text
               style={[
                 styles.phaseButtonText,
                 phase === 'return' && styles.phaseButtonTextActive,
+                isHandoverStage && styles.phaseButtonTextDisabled,
               ]}
             >
               При возврате
             </Text>
+            {isReturnStage && phasePhotosCount < 5 ? (
+              <View style={styles.phaseAlertDot} />
+            ) : null}
           </Pressable>
         </View>
 
-        {/* Progress banner */}
-        <View style={styles.banner}>
+        {/* Progress & Urgent Enforcement Banner */}
+        <View
+          style={[
+            styles.banner,
+            isPhaseEditable && phasePhotosCount < 5 && styles.bannerUrgent,
+            phasePhotosCount === 5 && styles.bannerSuccess,
+          ]}
+        >
           <View style={styles.bannerHeader}>
             <Ionicons
-              name={phasePhotosCount === 5 ? 'checkmark-circle' : 'information-circle-outline'}
+              name={
+                phasePhotosCount === 5
+                  ? 'checkmark-circle'
+                  : isPhaseEditable
+                    ? 'alert-circle'
+                    : 'information-circle-outline'
+              }
               size={22}
-              color={phasePhotosCount === 5 ? colors.success : colors.primary}
+              color={
+                phasePhotosCount === 5
+                  ? colors.success
+                  : isPhaseEditable
+                    ? colors.error
+                    : colors.primary
+              }
             />
-            <Text style={styles.bannerTitle}>
-              {phase === 'handover' ? 'Осмотр при выдаче: ' : 'Осмотр при возврате: '}
+            <Text
+              style={[
+                styles.bannerTitle,
+                isPhaseEditable && phasePhotosCount < 5 && styles.bannerTitleUrgent,
+                phasePhotosCount === 5 && styles.bannerTitleSuccess,
+              ]}
+            >
+              {phase === 'handover' ? 'Осмотр при получении: ' : 'Осмотр при возврате: '}
               {phasePhotosCount} из 5 ракурсов
             </Text>
           </View>
-          <Text style={styles.bannerText}>
+          <Text
+            style={[
+              styles.bannerText,
+              isPhaseEditable && phasePhotosCount < 5 && styles.bannerTextUrgent,
+            ]}
+          >
             {phasePhotosCount === 5
-              ? 'Все обязательные ракурсы зафиксированы. Фотографии прикреплены к сделке и акту приема-передачи.'
-              : 'Сделайте или прикрепите фото по каждому из 5 пунктов ниже для фиксации состояния.'}
+              ? 'Все 5 обязательных ракурсов зафиксированы на камеру и защищены в сделке.'
+              : isPhaseEditable
+                ? phase === 'handover'
+                  ? 'Внимание! Обязательно сфотографируйте инструмент на камеру при получении. Это подтвердит его целостность и защитит ваш обеспечительный платеж.'
+                  : 'Внимание! Обязательно зафиксируйте инструмент на камеру перед сдачей. Возврат обеспечительного платежа производится после проверки состояния.'
+                : 'Просмотр архивных снимков данного этапа.'}
           </Text>
         </View>
 
@@ -295,7 +375,9 @@ export default function RentalPhotosScreen() {
           {PHOTO_SLOTS.map((slot) => {
             const photo = getPhotoForSlot(slot.type);
             const isUploading = uploadingSlot === slot.type;
-            const photoUrl = photo?.download_url || (photo ? `/api/v1/rentals/${rentalID}/photos/${photo.id}` : '');
+            const photoUrl =
+              photo?.download_url ||
+              (photo ? `/api/v1/rentals/${rentalID}/photos/${photo.id}` : '');
 
             return (
               <View key={slot.type} style={styles.slotCard}>
@@ -313,8 +395,20 @@ export default function RentalPhotosScreen() {
                       <Text style={styles.badgeSuccessText}>Готово</Text>
                     </View>
                   ) : (
-                    <View style={styles.badgePending}>
-                      <Text style={styles.badgePendingText}>Нужно фото</Text>
+                    <View
+                      style={[
+                        styles.badgePending,
+                        isPhaseEditable && styles.badgePendingUrgent,
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.badgePendingText,
+                          isPhaseEditable && styles.badgePendingTextUrgent,
+                        ]}
+                      >
+                        Нужно фото
+                      </Text>
                     </View>
                   )}
                 </View>
@@ -345,35 +439,50 @@ export default function RentalPhotosScreen() {
                   </View>
                 ) : null}
 
-                {/* Action Buttons */}
+                {/* Action Buttons — ONLY Camera, NO Gallery */}
                 <View style={styles.actionRow}>
                   {isUploading ? (
                     <View style={styles.loadingBox}>
                       <ActivityIndicator size="small" color={colors.primary} />
                       <Text style={styles.loadingText}>Сохраняем снимок...</Text>
                     </View>
+                  ) : isPhaseEditable ? (
+                    <Pressable
+                      style={[
+                        styles.cameraButton,
+                        Boolean(photo) && styles.cameraButtonRetake,
+                      ]}
+                      onPress={() => void handleCameraCapture(slot.type)}
+                    >
+                      <Ionicons
+                        name={photo ? 'camera-reverse-outline' : 'camera'}
+                        size={18}
+                        color={photo ? colors.primary : colors.white}
+                      />
+                      <Text
+                        style={[
+                          styles.cameraButtonText,
+                          Boolean(photo) && styles.cameraButtonTextRetake,
+                        ]}
+                      >
+                        {photo ? 'Переснять на камеру' : 'Сделать снимок на камеру'}
+                      </Text>
+                    </Pressable>
                   ) : (
-                    <>
-                      <Pressable
-                        style={styles.slotButton}
-                        onPress={() => void handlePickAndUpload(slot.type, 'camera')}
-                      >
-                        <Ionicons name="camera-outline" size={18} color={colors.primary} />
-                        <Text style={styles.slotButtonText}>
-                          {photo ? 'Переснять' : 'Камера'}
-                        </Text>
-                      </Pressable>
-
-                      <Pressable
-                        style={[styles.slotButton, styles.slotButtonOutline]}
-                        onPress={() => void handlePickAndUpload(slot.type, 'library')}
-                      >
-                        <Ionicons name="images-outline" size={18} color={colors.ink} />
-                        <Text style={[styles.slotButtonText, { color: colors.ink }]}>
-                          Галерея
-                        </Text>
-                      </Pressable>
-                    </>
+                    <View style={styles.readOnlyNote}>
+                      <Ionicons
+                        name={photo ? 'shield-checkmark-outline' : 'alert-circle-outline'}
+                        size={16}
+                        color={photo ? colors.success : colors.muted}
+                      />
+                      <Text style={styles.readOnlyNoteText}>
+                        {photo
+                          ? phase === 'handover'
+                            ? 'Снимок зафиксирован при выдаче'
+                            : 'Снимок зафиксирован при возврате'
+                          : 'Снимок на данном этапе не зафиксирован'}
+                      </Text>
+                    </View>
                   )}
                 </View>
               </View>
@@ -416,6 +525,9 @@ const styles = StyleSheet.create({
   phaseButtonActive: {
     backgroundColor: colors.primary,
   },
+  phaseButtonDisabled: {
+    opacity: 0.5,
+  },
   phaseButtonText: {
     fontSize: 14,
     fontWeight: '600',
@@ -424,6 +536,15 @@ const styles = StyleSheet.create({
   phaseButtonTextActive: {
     color: colors.white,
   },
+  phaseButtonTextDisabled: {
+    color: colors.muted,
+  },
+  phaseAlertDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: colors.error,
+  },
   banner: {
     backgroundColor: colors.surfaceSubtle,
     borderRadius: radius.md,
@@ -431,6 +552,14 @@ const styles = StyleSheet.create({
     gap: spacing.xs,
     borderWidth: 1,
     borderColor: colors.outline,
+  },
+  bannerUrgent: {
+    backgroundColor: '#FFF5F5',
+    borderColor: '#FFD6D6',
+  },
+  bannerSuccess: {
+    backgroundColor: colors.successSoft,
+    borderColor: colors.success,
   },
   bannerHeader: {
     flexDirection: 'row',
@@ -442,10 +571,20 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: colors.ink,
   },
+  bannerTitleUrgent: {
+    color: colors.error,
+  },
+  bannerTitleSuccess: {
+    color: colors.success,
+  },
   bannerText: {
     ...typography.caption,
     color: colors.muted,
     lineHeight: 18,
+  },
+  bannerTextUrgent: {
+    color: colors.ink,
+    fontWeight: '500',
   },
   errorText: {
     color: colors.error,
@@ -509,10 +648,17 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     borderRadius: radius.pill,
   },
+  badgePendingUrgent: {
+    backgroundColor: '#FFEAEA',
+  },
   badgePendingText: {
     fontSize: 12,
     fontWeight: '600',
     color: colors.muted,
+  },
+  badgePendingTextUrgent: {
+    color: colors.error,
+    fontWeight: '700',
   },
   previewContainer: {
     borderRadius: radius.sm,
@@ -542,25 +688,39 @@ const styles = StyleSheet.create({
   },
   actionRow: {
     flexDirection: 'row',
-    gap: spacing.sm,
   },
-  slotButton: {
+  cameraButton: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 10,
+    paddingVertical: 12,
     borderRadius: radius.sm,
+    backgroundColor: colors.primary,
+    gap: 8,
+  },
+  cameraButtonRetake: {
     backgroundColor: colors.primarySoft,
-    gap: 6,
   },
-  slotButtonOutline: {
-    backgroundColor: colors.surfaceSubtle,
-  },
-  slotButtonText: {
-    fontSize: 13,
+  cameraButtonText: {
+    fontSize: 14,
     fontWeight: '700',
+    color: colors.white,
+  },
+  cameraButtonTextRetake: {
     color: colors.primary,
+  },
+  readOnlyNote: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    paddingVertical: 6,
+  },
+  readOnlyNoteText: {
+    ...typography.caption,
+    color: colors.muted,
+    fontWeight: '500',
   },
   loadingBox: {
     flex: 1,

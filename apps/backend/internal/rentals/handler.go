@@ -323,6 +323,8 @@ func (handler *Handler) writeServiceError(response http.ResponseWriter, err erro
 		writeError(response, http.StatusConflict, "tool is not available for requested extension period")
 	case errors.Is(err, ErrInvalidPhotoPhase):
 		writeError(response, http.StatusBadRequest, "invalid inspection photo phase")
+	case errors.Is(err, ErrPhotoPhaseNotAllowed):
+		writeError(response, http.StatusConflict, err.Error())
 	case errors.Is(err, ErrInvalidPhotoType):
 		writeError(response, http.StatusBadRequest, "invalid inspection photo type")
 	case errors.Is(err, ErrInvalidPhotoFile):
