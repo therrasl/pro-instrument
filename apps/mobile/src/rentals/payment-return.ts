@@ -5,15 +5,17 @@ const PENDING_RENTAL_KEY = 'pro-instrument.pending-payment-rental';
 export interface PendingPaymentAttempt {
   rentalID: string;
   startedAt: number;
+  paymentType?: 'initial' | 'extension';
 }
 
 export async function rememberPendingPaymentRental(
   rentalID: string,
+  paymentType: 'initial' | 'extension' = 'initial',
 ): Promise<number> {
   const startedAt = Date.now();
   await SecureStore.setItemAsync(
     PENDING_RENTAL_KEY,
-    JSON.stringify({ rentalID, startedAt } satisfies PendingPaymentAttempt),
+    JSON.stringify({ rentalID, startedAt, paymentType } satisfies PendingPaymentAttempt),
   );
   return startedAt;
 }

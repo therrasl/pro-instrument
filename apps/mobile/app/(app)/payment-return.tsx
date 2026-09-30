@@ -22,13 +22,23 @@ export default function PaymentReturnScreen() {
         return;
       }
       await clearPendingPaymentRental();
-      router.replace({
-        pathname: '/(app)/rentals/[id]',
-        params: {
-          id: attempt.rentalID,
-          paymentStartedAt: String(attempt.startedAt),
-        },
-      });
+      if (attempt.paymentType === 'extension') {
+        router.replace({
+          pathname: '/(app)/(tabs)/rentals',
+          params: {
+            extendedRentalID: attempt.rentalID,
+            successBanner: 'extension_paid',
+          },
+        } as Href);
+      } else {
+        router.replace({
+          pathname: '/(app)/rentals/[id]',
+          params: {
+            id: attempt.rentalID,
+            paymentStartedAt: String(attempt.startedAt),
+          },
+        });
+      }
     } catch {
       setError('Не удалось проверить оплату.');
     }

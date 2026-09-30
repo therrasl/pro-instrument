@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useFocusEffect, useRouter, type Href } from 'expo-router';
-import { useCallback, useMemo, useState } from 'react';
+import { useFocusEffect, useLocalSearchParams, useRouter, type Href } from 'expo-router';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   AppState,
@@ -61,6 +61,18 @@ function deliveryLabel(rental: Rental): string {
 
 export default function RentalsScreen() {
   const router = useRouter();
+  const { extendedRentalID, successBanner } = useLocalSearchParams<{
+    extendedRentalID?: string;
+    successBanner?: string;
+  }>();
+  const [showSuccessBanner, setShowSuccessBanner] = useState(false);
+
+  useEffect(() => {
+    if (successBanner === 'extension_paid' || extendedRentalID) {
+      setShowSuccessBanner(true);
+    }
+  }, [extendedRentalID, successBanner]);
+
   const { token } = useSession();
   const [rentals, setRentals] = useState<Rental[]>([]);
   const [toolSummaries, setToolSummaries] = useState<
@@ -129,6 +141,11 @@ export default function RentalsScreen() {
   const active = useMemo(
     () => rentals.filter((rental) => !historicalRentalStatuses.has(rental.status)),
     [rentals],
+  );
+
+  const returnQueue = useMemo(
+    () => active.filter((r) => ['awaiting_return', 'inspection'].includes(r.status)),
+    [active],
   );
 
   const history = useMemo(
@@ -217,6 +234,97 @@ export default function RentalsScreen() {
           </Text>
         </View>
         {error ? <ErrorNotice message={error} /> : null}
+
+        {/* Success Banner after Rental Extension */}
+        {showSuccessBanner ? (
+          <View style={styles.extensionSuccessBanner}>
+            <View style={styles.extensionSuccessIconBox}>
+              <Ionicons color="#15803D" name="checkmark-circle" size={24} />
+            </View>
+            <View style={styles.extensionSuccessContent}>
+              <Text style={styles.extensionSuccessTitle}>
+                Аренда успешно продлена! 🎉
+              </Text>
+              <Text style={styles.extensionSuccessText}>
+                Срок аренды обновлен в сделке. Инструмент остаётся у вас в пользовании.
+              </Text>
+            </View>
+            <Pressable hitSlop={12} onPress={() => setShowSuccessBanner(false)}>
+              <Ionicons color="#15803D" name="close" size={20} />
+            </Pressable>
+          </View>
+        ) : null}
+
+        {/* Multi-Tool Return Inspection Queue */}
+        {returnQueue.length > 0 ? (
+          <View style={styles.queueContainer}>
+            <View style={styles.queueHeader}>
+              <View style={styles.queueIconBox}>
+                <Ionicons color={colors.white} name="camera" size={20} />
+              </View>
+              <View style={styles.queueHeaderText}>
+                <Text style={styles.queueTitle}>
+                  Сдача инструментов: требуется фото ({returnQueue.length})
+                </Text>
+                <Text style={styles.queueSubtitle}>
+                  Сфотографируйте каждый инструмент перед возвратом курьеру или на склад
+                </Text>
+              </View>
+            </View>
+
+            <View style={styles.queueList}>
+              {returnQueue.map((item, index) => (
+                <View key={item.id} style={styles.queueCard}>
+                  <View style={styles.queueStepCircle}>
+                    <Text style={styles.queueStepText}>{index + 1}</Text>
+                  </View>
+                  <View style={styles.queueInfo}>
+                    <Text numberOfLines={1} style={styles.queueToolName}>
+                      {toolSummaries[item.tool_id]?.name ?? 'Инструмент'}
+                    </Text>
+                    <Text style={styles.queueOrderNumber}>
+                      Заказ №{item.order_number ?? item.id.slice(0, 8).toUpperCase()}
+                    </Text>
+                  </View>
+                  <View style={styles.queueActions}>
+                    <Pressable
+                      style={styles.queueCameraButton}
+                      onPress={() =>
+                        router.push(`/(app)/rentals/${item.id}/photos` as Href)
+                      }
+                    >
+                      <Ionicons color={colors.white} name="camera" size={15} />
+                      <Text style={styles.queueCameraButtonText}>Сдать</Text>
+                    </Pressable>
+                    <Pressable
+                      style={styles.queueExtendButton}
+                      onPress={() =>
+                        router.push(`/(app)/rentals/${item.id}` as Href)
+                      }
+                    >
+                      <Ionicons
+                        color={colors.primary}
+                        name="calendar-outline"
+                        size={14}
+                      />
+                      <Text style={styles.queueExtendButtonText}>Продлить</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              ))}
+            </View>
+
+            {returnQueue.length > 1 ? (
+              <Button
+                icon="arrow-forward-outline"
+                label={`Начать поочерёдный осмотр (${returnQueue.length} шт.)`}
+                onPress={() =>
+                  router.push(`/(app)/rentals/${returnQueue[0].id}/photos` as Href)
+                }
+              />
+            ) : null}
+          </View>
+        ) : null}
 
         {/* Loyalty & Stats Card */}
         {rentals.length > 0 ? (
@@ -821,5 +929,140 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     fontVariant: ['tabular-nums'],
     textAlign: 'right',
+  },
+  extensionSuccessBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F0FDF4',
+    borderWidth: 1.5,
+    borderColor: '#86EFAC',
+    borderRadius: radius.md,
+    padding: spacing.md,
+    gap: spacing.sm,
+  },
+  extensionSuccessIconBox: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  extensionSuccessContent: {
+    flex: 1,
+    gap: 2,
+  },
+  extensionSuccessTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#166534',
+  },
+  extensionSuccessText: {
+    fontSize: 13,
+    color: '#15803D',
+    lineHeight: 18,
+  },
+  queueContainer: {
+    backgroundColor: '#FFF5F5',
+    borderWidth: 1.5,
+    borderColor: '#FECACA',
+    borderRadius: radius.md,
+    padding: spacing.md,
+    gap: spacing.md,
+  },
+  queueHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.sm,
+  },
+  queueIconBox: {
+    width: 36,
+    height: 36,
+    borderRadius: radius.pill,
+    backgroundColor: colors.error,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  queueHeaderText: {
+    flex: 1,
+    gap: 2,
+  },
+  queueTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#991B1B',
+  },
+  queueSubtitle: {
+    fontSize: 13,
+    color: '#B91C1C',
+    lineHeight: 18,
+  },
+  queueList: {
+    gap: spacing.sm,
+  },
+  queueCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    padding: spacing.sm,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.outline,
+    gap: spacing.sm,
+  },
+  queueStepCircle: {
+    width: 26,
+    height: 26,
+    borderRadius: radius.pill,
+    backgroundColor: '#FEE2E2',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  queueStepText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.error,
+  },
+  queueInfo: {
+    flex: 1,
+    gap: 2,
+  },
+  queueToolName: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: colors.ink,
+  },
+  queueOrderNumber: {
+    fontSize: 12,
+    color: colors.muted,
+  },
+  queueActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  queueCameraButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.primary,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: radius.sm,
+    gap: 4,
+  },
+  queueCameraButtonText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: colors.white,
+  },
+  queueExtendButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.primarySoft,
+    paddingHorizontal: 8,
+    paddingVertical: 7,
+    borderRadius: radius.sm,
+    gap: 4,
+  },
+  queueExtendButtonText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.primary,
   },
 });

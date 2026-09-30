@@ -3,6 +3,7 @@ import {
   useFocusEffect,
   useLocalSearchParams,
   useRouter,
+  type Href,
 } from 'expo-router';
 import {
   useCallback,
@@ -123,6 +124,7 @@ export default function RentalDetailScreen() {
   const [extending, setExtending] = useState(false);
   const [extensionError, setExtensionError] = useState('');
   const [inspectionPhotos, setInspectionPhotos] = useState<InspectionPhoto[]>([]);
+  const isExtensionPayment = useRef(false);
   const paymentInFlight = useRef(false);
   const latestRequest = useRef(0);
   const statusPollAttempts = useRef(0);
@@ -142,8 +144,24 @@ export default function RentalDetailScreen() {
       try {
         const nextRental = await getRental(token, id);
         if (requestID !== latestRequest.current) return;
+
+        if (isExtensionPayment.current && (nextRental.status === 'rented' || nextRental.end_date !== rental?.end_date)) {
+          isExtensionPayment.current = false;
+          setPaymentStarted(false);
+          paymentPollStartedAt.current = null;
+          void clearPendingPaymentRental();
+          router.replace({
+            pathname: '/(app)/(tabs)/rentals',
+            params: {
+              extendedRentalID: nextRental.id,
+              successBanner: 'extension_paid',
+            },
+          } as Href);
+          return;
+        }
+
         setRental(nextRental);
-        if (nextRental.status !== 'awaiting_payment') {
+        if (nextRental.status !== 'awaiting_payment' && !isExtensionPayment.current) {
           setPaymentStarted(false);
           paymentPollStartedAt.current = null;
           void clearPendingPaymentRental();
@@ -266,7 +284,7 @@ export default function RentalDetailScreen() {
       !focused ||
       !paymentStarted ||
       !rental ||
-      rental.status !== 'awaiting_payment'
+      (rental.status !== 'awaiting_payment' && !isExtensionPayment.current)
     ) {
       return;
     }
@@ -446,18 +464,28 @@ export default function RentalDetailScreen() {
     setExtending(true);
     setExtensionError('');
     try {
+      isExtensionPayment.current = true;
       const extension = await createExtension(token, rental.id, extensionQuote.new_end_date);
       setExtensionModalVisible(false);
       if (extension.confirmation_url && isSafeConfirmationURL(extension.confirmation_url)) {
-        await rememberPendingPaymentRental(rental.id);
+        await rememberPendingPaymentRental(rental.id, 'extension');
         await Linking.openURL(extension.confirmation_url);
         paymentPollStartedAt.current = Date.now();
         setPaymentStarted(true);
         void load('silent');
       } else {
-        await load('refresh');
+        isExtensionPayment.current = false;
+        await clearPendingPaymentRental();
+        router.replace({
+          pathname: '/(app)/(tabs)/rentals',
+          params: {
+            extendedRentalID: rental.id,
+            successBanner: 'extension_paid',
+          },
+        } as Href);
       }
     } catch (cause) {
+      isExtensionPayment.current = false;
       setExtensionError(cause instanceof Error ? cause.message : 'Не удалось оформить продление.');
     } finally {
       setExtending(false);

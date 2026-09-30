@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams, useRouter, type Href } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
@@ -13,14 +13,16 @@ import {
   Text,
   View,
 } from 'react-native';
+import { getTool } from '../../../../src/api/catalog';
 import { resolveAPIAssetURL } from '../../../../src/api/client';
 import {
   getInspectionPhotos,
   getRental,
+  getRentals,
   uploadInspectionPhoto,
 } from '../../../../src/api/rentals';
 import { useSession } from '../../../../src/auth/session';
-import { Page, StateView, Title } from '../../../../src/components/ui';
+import { Button, Page, StateView, Title } from '../../../../src/components/ui';
 import { colors, radius, spacing, typography } from '../../../../src/theme/tokens';
 import type {
   InspectionPhoto,
@@ -69,7 +71,14 @@ const PHOTO_SLOTS: PhotoSlotDefinition[] = [
   },
 ];
 
+export interface ReturnQueueItem {
+  id: string;
+  orderNumber: string;
+  toolName: string;
+}
+
 export default function RentalPhotosScreen() {
+  const router = useRouter();
   const { id: rawID } = useLocalSearchParams<{ id: string | string[] }>();
   const rentalID = Array.isArray(rawID) ? rawID[0] : rawID;
   const { token } = useSession();
@@ -77,6 +86,7 @@ export default function RentalPhotosScreen() {
   const [rental, setRental] = useState<Rental | null>(null);
   const [photos, setPhotos] = useState<InspectionPhoto[]>([]);
   const [phase, setPhase] = useState<PhotoPhase>('handover');
+  const [otherReturnRentals, setOtherReturnRentals] = useState<ReturnQueueItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [uploadingSlot, setUploadingSlot] = useState<PhotoType | null>(null);
@@ -89,9 +99,10 @@ export default function RentalPhotosScreen() {
     setError('');
 
     try {
-      const [rentalData, photosData] = await Promise.all([
+      const [rentalData, photosData, allRentals] = await Promise.all([
         getRental(token, rentalID),
         getInspectionPhotos(token, rentalID),
+        getRentals(token).catch(() => [] as Rental[]),
       ]);
       setRental(rentalData);
       setPhotos(photosData);
@@ -101,6 +112,34 @@ export default function RentalPhotosScreen() {
         setPhase('return');
       } else {
         setPhase('handover');
+      }
+
+      // Find other rentals awaiting return inspection for sequential queue
+      const otherPending = allRentals.filter(
+        (r) => r.id !== rentalID && ['awaiting_return', 'inspection'].includes(r.status),
+      );
+      if (otherPending.length > 0) {
+        const summaries = await Promise.all(
+          otherPending.map(async (r) => {
+            try {
+              const t = await getTool(r.tool_id);
+              return {
+                id: r.id,
+                orderNumber: r.order_number ?? r.id.slice(0, 8).toUpperCase(),
+                toolName: t.name,
+              };
+            } catch {
+              return {
+                id: r.id,
+                orderNumber: r.order_number ?? r.id.slice(0, 8).toUpperCase(),
+                toolName: 'Инструмент',
+              };
+            }
+          }),
+        );
+        setOtherReturnRentals(summaries);
+      } else {
+        setOtherReturnRentals([]);
       }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Не удалось загрузить фотографии.');
@@ -489,6 +528,56 @@ export default function RentalPhotosScreen() {
             );
           })}
         </View>
+
+        {/* Completion and Multi-Tool Queue Card */}
+        {phase === 'return' && phasePhotosCount === 5 ? (
+          <View style={styles.completionCard}>
+            <View style={styles.completionHeader}>
+              <View style={styles.completionIconBox}>
+                <Ionicons name="checkmark-done-circle" size={32} color={colors.success} />
+              </View>
+              <View style={{ flex: 1, gap: 4 }}>
+                <Text style={styles.completionTitle}>
+                  {otherReturnRentals.length > 0
+                    ? 'Осмотр инструмента завершён (5 из 5)!'
+                    : 'Все инструменты успешно зафиксированы! 🎉'}
+                </Text>
+                <Text style={styles.completionDescription}>
+                  {otherReturnRentals.length > 0
+                    ? `Снимки сохранены. Следующий на очереди к сдаче: «${otherReturnRentals[0].toolName}» (Заказ №${otherReturnRentals[0].orderNumber}). Всего осталось сдать: ${otherReturnRentals.length}`
+                    : 'Все обязательные ракурсы зафиксированы на камеру. Инструменты готовы к передаче, обеспечительный платеж будет возвращен после проверки состояния.'}
+                </Text>
+              </View>
+            </View>
+
+            {otherReturnRentals.length > 0 ? (
+              <View style={styles.completionActions}>
+                <Button
+                  icon="arrow-forward-outline"
+                  label={`Перейти к: ${otherReturnRentals[0].toolName}`}
+                  onPress={() =>
+                    router.replace(
+                      `/(app)/rentals/${otherReturnRentals[0].id}/photos` as Href,
+                    )
+                  }
+                />
+                <Button
+                  label="К списку моих аренд"
+                  variant="secondary"
+                  onPress={() => router.replace('/(app)/(tabs)/rentals' as Href)}
+                />
+              </View>
+            ) : (
+              <View style={styles.completionActions}>
+                <Button
+                  icon="checkmark-circle-outline"
+                  label="Вернуться на главный экран"
+                  onPress={() => router.replace('/(app)/(tabs)/rentals' as Href)}
+                />
+              </View>
+            )}
+          </View>
+        ) : null}
       </ScrollView>
     </Page>
   );
@@ -734,5 +823,39 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: colors.muted,
     fontWeight: '600',
+  },
+  completionCard: {
+    backgroundColor: '#F0FDF4',
+    borderWidth: 1.5,
+    borderColor: '#86EFAC',
+    borderRadius: radius.md,
+    padding: spacing.md,
+    gap: spacing.md,
+  },
+  completionHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.sm,
+  },
+  completionIconBox: {
+    width: 44,
+    height: 44,
+    borderRadius: radius.pill,
+    backgroundColor: '#DCFCE7',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  completionTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#166534',
+  },
+  completionDescription: {
+    fontSize: 13,
+    color: '#15803D',
+    lineHeight: 18,
+  },
+  completionActions: {
+    gap: spacing.sm,
   },
 });

@@ -859,10 +859,21 @@ func (repository *PostgresRepository) CompleteSucceeded(
 				return fmt.Errorf("update extension status: %w", err)
 			}
 
+			var previousStatus string
+			err = transaction.QueryRow(
+				ctx,
+				`SELECT status FROM rental_requests WHERE id = $1::uuid FOR UPDATE`,
+				rentalID,
+			).Scan(&previousStatus)
+			if err != nil {
+				return fmt.Errorf("lookup rental status for extension: %w", err)
+			}
+
 			if _, err := transaction.Exec(
 				ctx,
 				`UPDATE rental_requests
 				 SET
+					status = 'rented',
 					end_date = $2,
 					rental_days = rental_days + $3,
 					rental_price = rental_price + $4,
@@ -876,6 +887,25 @@ func (repository *PostgresRepository) CompleteSucceeded(
 				now,
 			); err != nil {
 				return fmt.Errorf("extend rental request: %w", err)
+			}
+
+			if previousStatus != "rented" {
+				if _, err := transaction.Exec(
+					ctx,
+					`INSERT INTO rental_status_history (
+						rental_request_id,
+						from_status,
+						to_status,
+						comment,
+						created_at
+					)
+					VALUES ($1::uuid, $2, 'rented', 'Аренда продлена клиентом', $3)`,
+					rentalID,
+					previousStatus,
+					now,
+				); err != nil {
+					return fmt.Errorf("record status history for extension: %w", err)
+				}
 			}
 
 			if _, err := transaction.Exec(
