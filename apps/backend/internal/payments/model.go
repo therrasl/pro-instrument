@@ -40,6 +40,7 @@ type Payment struct {
 }
 
 type CreateData struct {
+	ClientPhone  string
 	ClientEmail  string
 	ToolName     string
 	ReceiptItems []yookassa.ReceiptItem
@@ -57,4 +58,29 @@ type PaymentEvent struct {
 type CreateResult struct {
 	Payment Payment
 	Created bool
+}
+
+type RefundResult struct {
+	DepositID  string    `json:"deposit_id"`
+	PaymentID  string    `json:"payment_id"`
+	RefundID   string    `json:"refund_id"`
+	Amount     int64     `json:"amount"`
+	Status     string    `json:"status"`
+	RefundedAt time.Time `json:"refunded_at"`
+}
+
+type DepositRefundData struct {
+	DepositID         string
+	RentalRequestID   string
+	OrderNumber       string
+	PaymentID         string
+	ProviderPaymentID string
+	OriginalAmount    int64
+	RefundableAmount  int64
+	RefundedAmount    int64
+	WithheldAmount    int64
+	DepositStatus     string
+	PaymentStatus     string
+	ClientPhone       string
+	ClientEmail       string
 }

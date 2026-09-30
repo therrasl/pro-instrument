@@ -234,8 +234,32 @@ func (provider *providerStub) GetPayment(
 	return provider.getResult, provider.getErr
 }
 
+func (provider *providerStub) CreateRefund(
+	_ context.Context,
+	_ string,
+	input yookassa.CreateRefundRequest,
+) (yookassa.Refund, error) {
+	return yookassa.Refund{
+		ID:        "refund-1",
+		PaymentID: input.PaymentID,
+		Status:    "succeeded",
+		Amount:    input.Amount,
+	}, nil
+}
+
+func (provider *providerStub) GetRefund(
+	_ context.Context,
+	refundID string,
+) (yookassa.Refund, error) {
+	return yookassa.Refund{
+		ID:     refundID,
+		Status: "succeeded",
+	}, nil
+}
+
 type repositoryStub struct {
 	prepared     Payment
+	createData   CreateData
 	created      bool
 	prepareErr   error
 	saved        Payment
@@ -257,7 +281,7 @@ func (repository *repositoryStub) PreparePayment(
 	bool,
 	time.Time,
 ) (Payment, CreateData, bool, error) {
-	return repository.prepared, CreateData{}, repository.created, repository.prepareErr
+	return repository.prepared, repository.createData, repository.created, repository.prepareErr
 }
 
 func (repository *repositoryStub) SaveProviderPayment(
@@ -380,6 +404,36 @@ func (repository *repositoryStub) RejectEvent(
 	return nil
 }
 
+func (repository *repositoryStub) GetDepositForRefund(
+	_ context.Context,
+	rentalID string,
+) (DepositRefundData, error) {
+	return DepositRefundData{
+		DepositID:         "deposit-1",
+		RentalRequestID:   rentalID,
+		OrderNumber:       "PI-2026-000001",
+		PaymentID:         "payment-1",
+		ProviderPaymentID: "provider-1",
+		OriginalAmount:    200000,
+		RefundableAmount:  200000,
+		DepositStatus:     "paid",
+		PaymentStatus:     StatusSucceeded,
+		ClientPhone:       "+79991112233",
+		ClientEmail:       "test@example.com",
+	}, nil
+}
+
+func (repository *repositoryStub) RecordDepositRefund(
+	_ context.Context,
+	depositID string,
+	amount int64,
+	refundID string,
+	providerPayload json.RawMessage,
+	now time.Time,
+) error {
+	return nil
+}
+
 func preparedPayment() Payment {
 	return Payment{
 		ID:                "payment-1",
@@ -439,3 +493,108 @@ type temporaryTestError struct{}
 
 func (temporaryTestError) Error() string     { return "temporary" }
 func (temporaryTestError) IsTemporary() bool { return true }
+
+func TestFiscalReceiptCustomerAndTaxSystem(t *testing.T) {
+	repository := &repositoryStub{
+		prepared: preparedPayment(),
+		createData: CreateData{
+			ClientPhone:  "+79991112233",
+			ClientEmail:  "client@example.test",
+			ToolName:     "Перфоратор Bosch",
+			ReceiptItems: []yookassa.ReceiptItem{{Description: "Аренда", Amount: yookassa.Money{Value: "3500.00", Currency: "RUB"}}},
+		},
+		created: true,
+	}
+	provider := &providerStub{
+		createResult: providerPayment("pending", false, "3500.00"),
+	}
+	service := NewService(
+		repository,
+		provider,
+		true,
+		"https://app.example.test/return",
+		true,
+		time.Second,
+		5,
+		log.New(io.Discard, "", 0),
+	).SetFiscalParameters(2, 1)
+
+	_, err := service.Create(context.Background(), "client-1", "rental-1")
+	if err != nil {
+		t.Fatalf("create payment: %v", err)
+	}
+
+	if provider.lastCreate.Receipt == nil {
+		t.Fatal("expected receipt in provider create request")
+	}
+	receipt := provider.lastCreate.Receipt
+	if receipt.Customer.Phone != "+79991112233" || receipt.Customer.Email != "client@example.test" {
+		t.Fatalf("unexpected receipt customer: %#v", receipt.Customer)
+	}
+	if receipt.TaxSystemCode == nil || *receipt.TaxSystemCode != 2 {
+		t.Fatalf("unexpected tax system code: %v", receipt.TaxSystemCode)
+	}
+	if len(receipt.Items) == 0 {
+		t.Fatal("expected receipt items")
+	}
+	for _, item := range receipt.Items {
+		if item.VATCode != 1 {
+			t.Fatalf("expected VAT code 1, got %d", item.VATCode)
+		}
+	}
+}
+
+func TestRefundDepositSuccessAndReceipt(t *testing.T) {
+	repository := &repositoryStub{}
+	provider := &providerStub{}
+	service := NewService(
+		repository,
+		provider,
+		true,
+		"https://app.example.test/return",
+		true,
+		time.Second,
+		5,
+		log.New(io.Discard, "", 0),
+	).SetFiscalParameters(2, 1)
+
+	result, err := service.RefundDeposit(context.Background(), "rental-1", nil, "Завершение заказа")
+	if err != nil {
+		t.Fatalf("refund deposit: %v", err)
+	}
+	if result.RefundID != "refund-1" || result.Amount != 200000 || result.Status != "succeeded" {
+		t.Fatalf("unexpected refund result: %#v", result)
+	}
+}
+
+func TestRefundDepositAlreadyRefunded(t *testing.T) {
+	provider := &providerStub{}
+
+	// Custom stub that returns already refunded deposit
+	alreadyRefundedRepo := &alreadyRefundedRepoStub{}
+	serviceWithRefunded := testService(alreadyRefundedRepo, provider)
+
+	result, err := serviceWithRefunded.RefundDeposit(context.Background(), "rental-1", nil, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != "already_refunded" || result.Amount != 0 {
+		t.Fatalf("expected already_refunded status, got: %#v", result)
+	}
+}
+
+type alreadyRefundedRepoStub struct {
+	repositoryStub
+}
+
+func (r *alreadyRefundedRepoStub) GetDepositForRefund(
+	_ context.Context,
+	rentalID string,
+) (DepositRefundData, error) {
+	return DepositRefundData{
+		DepositID:        "deposit-1",
+		RefundableAmount: 0,
+		DepositStatus:    "refunded",
+		PaymentStatus:    StatusSucceeded,
+	}, nil
+}

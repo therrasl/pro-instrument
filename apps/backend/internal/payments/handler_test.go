@@ -82,6 +82,36 @@ func TestPaymentHandlerRejectsExpiredDeadline(t *testing.T) {
 	}
 }
 
+func TestPaymentHandlerRefundDepositEndpoint(t *testing.T) {
+	paymentService := &handlerPaymentService{}
+	authHandler := auth.NewHandler(
+		authServiceStub{client: auth.Client{ID: "client-1"}},
+		log.New(io.Discard, "", 0),
+	)
+	handler := NewHandler(paymentService, log.New(io.Discard, "", 0))
+	mux := http.NewServeMux()
+	handler.Register(mux, authHandler.BearerAuth)
+
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/rentals/40000000-0000-4000-8000-000000000001/refund-deposit",
+		bytes.NewBufferString(`{"reason":"Тестовый возврат"}`),
+	)
+	request.Header.Set("Authorization", "Bearer token")
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, response.Code, response.Body.String())
+	}
+	if paymentService.rentalID != "40000000-0000-4000-8000-000000000001" {
+		t.Fatalf("unexpected rental id refunded: %s", paymentService.rentalID)
+	}
+	if !bytes.Contains(response.Body.Bytes(), []byte(`"status":"succeeded"`)) {
+		t.Fatalf("unexpected response body: %s", response.Body.String())
+	}
+}
+
 type handlerPaymentService struct {
 	result   CreateResult
 	err      error
@@ -97,6 +127,23 @@ func (service *handlerPaymentService) Create(
 	service.clientID = clientID
 	service.rentalID = rentalID
 	return service.result, service.err
+}
+
+func (service *handlerPaymentService) RefundDeposit(
+	_ context.Context,
+	rentalID string,
+	amount *int64,
+	reason string,
+) (RefundResult, error) {
+	service.rentalID = rentalID
+	return RefundResult{
+		DepositID:  "deposit-1",
+		PaymentID:  "payment-1",
+		RefundID:   "refund-1",
+		Amount:     150000,
+		Status:     "succeeded",
+		RefundedAt: time.Now(),
+	}, nil
 }
 
 type authServiceStub struct {

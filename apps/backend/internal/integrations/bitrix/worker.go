@@ -10,10 +10,29 @@ import (
 	"time"
 
 	"github.com/pro-instrument/pro-instrument/apps/backend/internal/config"
+	"github.com/pro-instrument/pro-instrument/apps/backend/internal/payments"
 	"github.com/pro-instrument/pro-instrument/apps/backend/internal/rentals"
 )
 
 const workerLease = 5 * time.Minute
+
+const (
+	BitrixFieldDays          = "UF_CRM_1755208962363" // double: Количество дней
+	BitrixFieldStartTime     = "UF_CRM_1755209011746" // datetime: Время выдачи
+	BitrixFieldEndTime       = "UF_CRM_1773210836"    // datetime: Дата/время возврата
+	BitrixFieldTool          = "UF_CRM_1755209429146" // string: Какое нужно оборудование
+	BitrixFieldDailyPrice    = "UF_CRM_1755209482048" // money: Базовая стоимость в сутки
+	BitrixFieldClientName    = "UF_CRM_1755209635979" // string: Контактное лицо: ФИО
+	BitrixFieldClientPhone   = "UF_CRM_1756648546267" // string: Контактное лицо: телефон
+	BitrixFieldContractNum   = "UF_CRM_1757331206997" // string: Номер договора
+	BitrixFieldContractDate  = "UF_CRM_1757331227232" // date: Дата договора
+	BitrixFieldDeposit       = "UF_CRM_1758015711985" // money: Обеспечительный платеж
+	BitrixFieldClientPayment = "UF_CRM_1755209690479" // money: Оплата от клиента
+	BitrixFieldDeliveryCost  = "UF_CRM_1755209709779" // money: Доставка
+	BitrixFieldDeliveryAddr  = "UF_CRM_1755209641247" // string: Адрес доставки
+	BitrixFieldDebtSurcharge = "UF_CRM_1773211114142" // money: Доплата Арендатора (задолженность/просрочка)
+	BitrixFieldDepositRefund = "UF_CRM_1773211126261" // money: Возврат залога Арендатору
+)
 
 type WorkerRepository interface {
 	ClaimOutbox(context.Context, time.Time, time.Time, int) (OutboxEvent, bool, error)
@@ -28,19 +47,25 @@ type WorkerRepository interface {
 	CompleteInbound(context.Context, string, string, time.Time) error
 	RetryInbound(context.Context, string, time.Time, string) error
 	RejectInbound(context.Context, string, int, string, time.Time) error
+	CreateRentalFromBitrix(context.Context, DealFull, ContactDetails, string) (string, error)
 }
 
 type RentalStatusUpdater interface {
 	ApplyBitrixStatus(context.Context, string, string) (string, bool, error)
 }
 
+type DepositRefunder interface {
+	RefundDeposit(context.Context, string, *int64, string) (payments.RefundResult, error)
+}
+
 type Worker struct {
-	repository    WorkerRepository
-	client        Client
-	statusUpdater RentalStatusUpdater
-	settings      config.BitrixConfig
-	logger        *log.Logger
-	now           func() time.Time
+	repository      WorkerRepository
+	client          Client
+	statusUpdater   RentalStatusUpdater
+	depositRefunder DepositRefunder
+	settings        config.BitrixConfig
+	logger          *log.Logger
+	now             func() time.Time
 }
 
 func NewWorker(
@@ -58,6 +83,11 @@ func NewWorker(
 		logger:        logger,
 		now:           time.Now,
 	}
+}
+
+func (worker *Worker) SetDepositRefunder(refunder DepositRefunder) *Worker {
+	worker.depositRefunder = refunder
+	return worker
 }
 
 func (worker *Worker) Run(ctx context.Context) error {
@@ -200,7 +230,7 @@ func (worker *Worker) createDeal(ctx context.Context, rentalID string) error {
 
 	dealID, found, err := worker.client.FindDealByRentalID(
 		ctx,
-		data.RentalID,
+		businessNumber(data),
 		worker.settings.CategoryID,
 	)
 	if err != nil {
@@ -227,10 +257,28 @@ func (worker *Worker) updateDeal(ctx context.Context, rentalID string) error {
 	if !ok {
 		return permanentError{fmt.Errorf("rental status %q has no Bitrix stage", data.Status)}
 	}
+
+	dailyRate := data.RentalPrice
+	if data.RentalDays > 0 {
+		dailyRate = data.RentalPrice / int64(data.RentalDays)
+	}
+
+	updatePayload := map[string]any{
+		"STAGE_ID":               stageID,
+		"OPPORTUNITY":            formatKopecks(data.TotalAmount),
+		"COMMENTS":               worker.dealComments(data),
+		BitrixFieldClientPayment: formatMoney(data.TotalAmount),
+		BitrixFieldDeposit:       formatMoney(data.DepositAmount),
+		BitrixFieldDailyPrice:    formatMoney(dailyRate),
+	}
+	if data.Status == rentals.StatusCompleted {
+		updatePayload[BitrixFieldDepositRefund] = formatMoney(data.DepositAmount)
+	}
+
 	if err := worker.client.UpdateDeal(
 		ctx,
 		data.DealID,
-		map[string]any{"STAGE_ID": stageID},
+		updatePayload,
 	); err != nil {
 		return classifyClientError(err)
 	}
@@ -246,7 +294,8 @@ func (worker *Worker) processInbound(
 	if err != nil {
 		return worker.handleInboundError(ctx, event, now, classifyClientError(err))
 	}
-	if deal.CategoryID != strconv.Itoa(worker.settings.CategoryID) {
+	categoryStr := strconv.Itoa(worker.settings.CategoryID)
+	if deal.CategoryID != categoryStr && deal.CategoryID != "0" && deal.CategoryID != "" {
 		return worker.handleInboundError(
 			ctx,
 			event,
@@ -265,13 +314,44 @@ func (worker *Worker) processInbound(
 	}
 
 	rentalID, err := worker.applyInboundStatus(ctx, deal.ID, targetStatus)
+	if errors.Is(err, rentals.ErrRentalNotFound) {
+		rentalID, err = worker.importDealFromBitrix(ctx, deal.ID, targetStatus)
+	}
 	if isPermanentRentalStatusError(err) {
 		err = permanentError{err}
 	}
 	if err != nil {
 		return worker.handleInboundError(ctx, event, now, err)
 	}
+
+	if targetStatus == rentals.StatusCompleted && worker.depositRefunder != nil && rentalID != "" {
+		if res, err := worker.depositRefunder.RefundDeposit(ctx, rentalID, nil, "Bitrix completed stage"); err != nil {
+			worker.logger.Printf("auto refund deposit failed for rental %s: %v", rentalID, err)
+		} else {
+			worker.logger.Printf("auto refund deposit processed for rental %s: refund_id=%s amount=%d status=%s", rentalID, res.RefundID, res.Amount, res.Status)
+		}
+	}
+
 	return worker.repository.CompleteInbound(ctx, event.ID, rentalID, now)
+}
+
+func (worker *Worker) importDealFromBitrix(
+	ctx context.Context,
+	dealID string,
+	targetStatus string,
+) (string, error) {
+	dealFull, err := worker.client.GetDealFull(ctx, dealID)
+	if err != nil {
+		return "", err
+	}
+	var contact ContactDetails
+	if dealFull.ContactID != "" {
+		contact, err = worker.client.GetContact(ctx, dealFull.ContactID)
+		if err != nil && worker.logger != nil {
+			worker.logger.Printf("Could not get Bitrix contact %s: %v", dealFull.ContactID, err)
+		}
+	}
+	return worker.repository.CreateRentalFromBitrix(ctx, dealFull, contact, targetStatus)
 }
 
 func (worker *Worker) applyInboundStatus(
@@ -371,23 +451,47 @@ func (worker *Worker) handleInboundError(
 }
 
 func (worker *Worker) dealFields(data RentalSyncData) map[string]any {
+	dailyRate := data.RentalPrice
+	if data.RentalDays > 0 {
+		dailyRate = data.RentalPrice / int64(data.RentalDays)
+	}
+
+	startDateTime := data.StartDate + "T09:00:00+03:00"
+	endDateTime := data.EndDate + "T19:00:00+03:00"
+
 	fields := map[string]any{
-		"TITLE":       dealTitle(data.RentalID),
+		"TITLE":       dealTitle(businessNumber(data)),
 		"CATEGORY_ID": worker.settings.CategoryID,
 		"STAGE_ID":    worker.settings.Stages.Application,
 		"CONTACT_ID":  data.ContactID,
 		"CURRENCY_ID": "RUB",
 		"OPPORTUNITY": formatKopecks(data.TotalAmount),
 		"COMMENTS":    worker.dealComments(data),
+		"BEGINDATE":   startDateTime,
+		"CLOSEDATE":   endDateTime,
+
+		BitrixFieldDays:          data.RentalDays,
+		BitrixFieldStartTime:     startDateTime,
+		BitrixFieldEndTime:       endDateTime,
+		BitrixFieldTool:          data.ToolName,
+		BitrixFieldDailyPrice:    formatMoney(dailyRate),
+		BitrixFieldClientName:    data.ClientFullName,
+		BitrixFieldClientPhone:   data.ClientPhone,
+		BitrixFieldContractNum:   businessNumber(data),
+		BitrixFieldContractDate:  data.StartDate,
+		BitrixFieldDeposit:       formatMoney(data.DepositAmount),
+		BitrixFieldClientPayment: formatMoney(data.TotalAmount),
+		BitrixFieldDeliveryCost:  formatMoney(data.DeliveryCost),
+		BitrixFieldDeliveryAddr:  data.DeliveryAddress,
 	}
 	customFields := map[string]any{
 		worker.settings.Fields.RentalID:    data.RentalID,
 		worker.settings.Fields.Tool:        data.ToolName,
 		worker.settings.Fields.StartDate:   data.StartDate,
 		worker.settings.Fields.EndDate:     data.EndDate,
-		worker.settings.Fields.RentalPrice: formatKopecks(data.RentalPrice),
-		worker.settings.Fields.Deposit:     formatKopecks(data.DepositAmount),
-		worker.settings.Fields.Delivery:    formatKopecks(data.DeliveryCost),
+		worker.settings.Fields.RentalPrice: formatMoney(data.RentalPrice),
+		worker.settings.Fields.Deposit:     formatMoney(data.DepositAmount),
+		worker.settings.Fields.Delivery:    formatMoney(data.DeliveryCost),
 		worker.settings.Fields.Address:     data.DeliveryAddress,
 	}
 	for fieldID, value := range customFields {
@@ -399,17 +503,41 @@ func (worker *Worker) dealFields(data RentalSyncData) map[string]any {
 }
 
 func (worker *Worker) dealComments(data RentalSyncData) string {
-	return strings.Join([]string{
+	lines := []string{
+		"Номер заказа: " + businessNumber(data),
 		"Внутренний rental ID: " + data.RentalID,
+		"Тип клиента: " + clientTypeLabel(data.ClientType),
 		"Клиент: " + data.ClientFullName,
 		"Телефон: " + data.ClientPhone,
 		"Инструмент: " + data.ToolName,
-		"Период: " + data.StartDate + " — " + data.EndDate,
+		"Период: " + data.StartDate + " (с 09:00) — " + data.EndDate + " (до 19:00)",
 		"Аренда: " + formatKopecks(data.RentalPrice) + " RUB",
-		"Залог: " + formatKopecks(data.DepositAmount) + " RUB",
+		"Обеспечительный платеж: " + formatKopecks(data.DepositAmount) + " RUB",
 		"Доставка: " + data.DeliveryMethod + ", " + formatKopecks(data.DeliveryCost) + " RUB",
 		"Адрес: " + firstNonEmpty(data.DeliveryAddress, "не указан"),
-	}, "\n")
+	}
+	if data.ClientType == "legal_entity" {
+		lines = append(lines, "Организация: "+data.OrganizationName, "ИНН: "+data.INN, "Контактное лицо: "+data.ContactFullName)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func formatMoney(kopecks int64) string {
+	return fmt.Sprintf("%.2f|RUB", float64(kopecks)/100.0)
+}
+
+func clientTypeLabel(value string) string {
+	if value == "legal_entity" {
+		return "Юридическое лицо"
+	}
+	return "Физическое лицо"
+}
+
+func businessNumber(data RentalSyncData) string {
+	if data.OrderNumber != "" {
+		return data.OrderNumber
+	}
+	return data.RentalID
 }
 
 func (worker *Worker) stageForStatus(status string) (string, bool) {

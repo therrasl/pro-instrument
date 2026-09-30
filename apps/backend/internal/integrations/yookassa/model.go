@@ -23,7 +23,10 @@ type Confirmation struct {
 }
 
 type ReceiptCustomer struct {
-	Email string `json:"email"`
+	FullName string `json:"full_name,omitempty"`
+	INN      string `json:"inn,omitempty"`
+	Email    string `json:"email,omitempty"`
+	Phone    string `json:"phone,omitempty"`
 }
 
 type ReceiptItem struct {
@@ -31,13 +34,14 @@ type ReceiptItem struct {
 	Quantity       string `json:"quantity"`
 	Amount         Money  `json:"amount"`
 	VATCode        int    `json:"vat_code"`
-	PaymentMode    string `json:"payment_mode"`
-	PaymentSubject string `json:"payment_subject"`
+	PaymentMode    string `json:"payment_mode,omitempty"`
+	PaymentSubject string `json:"payment_subject,omitempty"`
 }
 
 type Receipt struct {
-	Customer ReceiptCustomer `json:"customer"`
-	Items    []ReceiptItem   `json:"items"`
+	Customer      ReceiptCustomer `json:"customer"`
+	Items         []ReceiptItem   `json:"items"`
+	TaxSystemCode *int            `json:"tax_system_code,omitempty"`
 }
 
 type CreatePaymentRequest struct {
@@ -47,6 +51,24 @@ type CreatePaymentRequest struct {
 	Description  string              `json:"description"`
 	Metadata     map[string]string   `json:"metadata"`
 	Receipt      *Receipt            `json:"receipt,omitempty"`
+}
+
+type CreateRefundRequest struct {
+	PaymentID   string   `json:"payment_id"`
+	Amount      Money    `json:"amount"`
+	Description string   `json:"description,omitempty"`
+	Receipt     *Receipt `json:"receipt,omitempty"`
+}
+
+type Refund struct {
+	ID                  string          `json:"id"`
+	PaymentID           string          `json:"payment_id"`
+	Status              string          `json:"status"`
+	Amount              Money           `json:"amount"`
+	ReceiptRegistration string          `json:"receipt_registration,omitempty"`
+	Description         string          `json:"description,omitempty"`
+	CreatedAt           string          `json:"created_at,omitempty"`
+	Raw                 json.RawMessage `json:"-"`
 }
 
 type CancellationDetails struct {

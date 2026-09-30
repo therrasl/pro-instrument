@@ -20,6 +20,8 @@ import (
 	"github.com/pro-instrument/pro-instrument/apps/backend/internal/integrations/bitrix"
 	"github.com/pro-instrument/pro-instrument/apps/backend/internal/integrations/yookassa"
 	"github.com/pro-instrument/pro-instrument/apps/backend/internal/middleware"
+	"github.com/pro-instrument/pro-instrument/apps/backend/internal/orderdocs"
+	"github.com/pro-instrument/pro-instrument/apps/backend/internal/organizations"
 	"github.com/pro-instrument/pro-instrument/apps/backend/internal/payments"
 	"github.com/pro-instrument/pro-instrument/apps/backend/internal/push"
 	"github.com/pro-instrument/pro-instrument/apps/backend/internal/rentals"
@@ -74,7 +76,11 @@ func run(logger *log.Logger) error {
 		authServiceOptions...,
 	)
 	authHandler := auth.NewHandler(authService, logger)
-	appConfigHandler := appconfig.NewHandler(settings.Demo.Enabled, settings.Demo.OTPCode)
+	appConfigHandler := appconfig.NewHandler(
+		settings.Demo.Enabled,
+		settings.Demo.OTPCode,
+		settings.PickupAddress,
+	)
 
 	fileStorage, err := verification.NewLocalFileStorage(settings.StoragePath)
 	if err != nil {
@@ -97,8 +103,19 @@ func run(logger *log.Logger) error {
 		rentalsRepository,
 		settings.RentalHoldTTL,
 		settings.CourierFee,
+		settings.PickupAddress,
+		settings.StoragePath,
 	)
+	orderDocumentsService := orderdocs.NewService(
+		orderdocs.NewPostgresRepository(pool),
+		orderdocs.NewGenerator(settings.StoragePath),
+		logger,
+	)
+	rentalsService.SetDocumentGenerator(orderDocumentsService)
 	rentalsHandler := rentals.NewHandler(rentalsService, logger)
+	organizationRepository := organizations.NewPostgresRepository(pool)
+	organizationService := organizations.NewService(organizationRepository)
+	organizationHandler := organizations.NewHandler(organizationService, logger)
 
 	bitrixRepository := bitrix.NewPostgresRepository(pool)
 	bitrixEventsHandler := bitrix.NewEventsHandler(
@@ -124,7 +141,7 @@ func run(logger *log.Logger) error {
 		settings.YooKassa.RetryBase,
 		settings.YooKassa.MaxAttempts,
 		logger,
-	)
+	).SetFiscalParameters(settings.YooKassa.TaxSystemCode, settings.YooKassa.VATCode)
 	paymentsHandler := payments.NewHandler(paymentsService, logger)
 	yooKassaWebhookHandler := payments.NewWebhookHandler(paymentsService, logger)
 	pushRepository := push.NewPostgresRepository(pool)
@@ -158,6 +175,7 @@ func run(logger *log.Logger) error {
 		yooKassaWebhookHandler,
 		pushHandler,
 		appConfigHandler,
+		organizationHandler,
 	)))
 	server := &http.Server{
 		Addr:              ":" + settings.Port,

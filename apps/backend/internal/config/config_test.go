@@ -12,6 +12,7 @@ func TestLoad(t *testing.T) {
 	values := map[string]string{
 		"DATABASE_URL":    "postgres://postgres:postgres@localhost:5432/pro_instrument?sslmode=disable",
 		"OTP_HASH_SECRET": "0123456789abcdef0123456789abcdef",
+		"PICKUP_ADDRESS":  "Москва, тестовый адрес",
 	}
 
 	settings, err := config.Load(func(key string) string {
@@ -78,6 +79,7 @@ func TestLoadAuthOverrides(t *testing.T) {
 		"MAX_UPLOAD_SIZE":              "2048",
 		"RENTAL_HOLD_TTL":              "45m",
 		"COURIER_DELIVERY_FEE_KOPECKS": "125000",
+		"PICKUP_ADDRESS":               "Москва, пункт выдачи",
 	}
 
 	settings, err := config.Load(func(key string) string { return values[key] })
@@ -102,6 +104,7 @@ func TestLoadDemoConfigurationNormalizesPhones(t *testing.T) {
 		"DEMO_MODE_ENABLED": "true",
 		"DEMO_OTP_CODE":     "654321",
 		"DEMO_OTP_PHONES":   "8 (999) 123-45-67, +4915112345678, +7 999 123 45 67",
+		"PICKUP_ADDRESS":    "Москва, пункт выдачи",
 	}
 	settings, err := config.Load(func(key string) string { return values[key] })
 	if err != nil {
@@ -122,6 +125,7 @@ func TestLoadRejectsInvalidDemoConfiguration(t *testing.T) {
 		"DEMO_MODE_ENABLED": "true",
 		"DEMO_OTP_CODE":     "654321",
 		"DEMO_OTP_PHONES":   "+79991234567",
+		"PICKUP_ADDRESS":    "Москва, пункт выдачи",
 	}
 	tests := []struct {
 		name  string
@@ -157,6 +161,7 @@ func TestLoadDisabledDemoModeIgnoresDemoValues(t *testing.T) {
 		"DEMO_MODE_ENABLED": "false",
 		"DEMO_OTP_CODE":     "not-used",
 		"DEMO_OTP_PHONES":   "not-used",
+		"PICKUP_ADDRESS":    "Москва, пункт выдачи",
 	}
 	settings, err := config.Load(func(key string) string { return values[key] })
 	if err != nil {
@@ -234,6 +239,7 @@ func TestLoadBitrixEnabledConfiguration(t *testing.T) {
 		"BITRIX_HTTP_TIMEOUT":    "5s",
 		"BITRIX_MAX_ATTEMPTS":    "7",
 		"BITRIX_FIELD_RENTAL_ID": "UF_CRM_RENTAL_ID",
+		"PICKUP_ADDRESS":         "Москва, пункт выдачи",
 	}
 
 	settings, err := config.Load(func(key string) string { return values[key] })
@@ -253,6 +259,7 @@ func TestLoadBitrixEnabledRequiresURLAndSecret(t *testing.T) {
 		"DATABASE_URL":    "postgres://localhost/test",
 		"OTP_HASH_SECRET": "0123456789abcdef0123456789abcdef",
 		"BITRIX_ENABLED":  "true",
+		"PICKUP_ADDRESS":  "Москва, пункт выдачи",
 	}
 	_, err := config.Load(func(key string) string { return values[key] })
 	if err == nil || !strings.Contains(err.Error(), "BITRIX_BASE_URL") {
@@ -278,6 +285,7 @@ func TestLoadYooKassaEnabledConfiguration(t *testing.T) {
 		"PUBLIC_BASE_URL":           "https://api.example.test/",
 		"YOOKASSA_HTTP_TIMEOUT":     "4s",
 		"YOOKASSA_MAX_ATTEMPTS":     "6",
+		"PICKUP_ADDRESS":            "Москва, пункт выдачи",
 	}
 	settings, err := config.Load(func(key string) string { return values[key] })
 	if err != nil {
@@ -298,6 +306,7 @@ func TestLoadYooKassaEnabledRequiresCredentialsAndURLs(t *testing.T) {
 		"DATABASE_URL":     "postgres://localhost/test",
 		"OTP_HASH_SECRET":  "0123456789abcdef0123456789abcdef",
 		"YOOKASSA_ENABLED": "true",
+		"PICKUP_ADDRESS":   "Москва, пункт выдачи",
 	}
 	_, err := config.Load(func(key string) string { return values[key] })
 	if err == nil || !strings.Contains(err.Error(), "YOOKASSA_SHOP_ID") {

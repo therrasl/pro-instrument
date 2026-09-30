@@ -21,9 +21,17 @@ type Client interface {
 	CreateDeal(context.Context, map[string]any) (string, error)
 	UpdateDeal(context.Context, string, map[string]any) error
 	GetDeal(context.Context, string) (DealState, error)
+	GetDealFull(context.Context, string) (DealFull, error)
+	GetContact(context.Context, string) (ContactDetails, error)
 }
 
 type ContactInput struct {
+	FullName string
+	Phone    string
+}
+
+type ContactDetails struct {
+	ID       string
 	FullName string
 	Phone    string
 }
@@ -32,6 +40,22 @@ type DealState struct {
 	ID         string
 	CategoryID string
 	StageID    string
+}
+
+type DealFull struct {
+	ID          string
+	Title       string
+	CategoryID  string
+	StageID     string
+	ContactID   string
+	Opportunity string
+	BeginDate   string
+	CloseDate   string
+	ToolName    string
+	ClientName  string
+	ClientPhone string
+	Deposit     string
+	Address     string
 }
 
 type APIError struct {
@@ -83,22 +107,28 @@ type InboundEvent struct {
 }
 
 type RentalSyncData struct {
-	RentalID        string
-	ClientID        string
-	ClientFullName  string
-	ClientPhone     string
-	ContactID       string
-	DealID          string
-	ToolName        string
-	StartDate       string
-	EndDate         string
-	RentalPrice     int64
-	DepositAmount   int64
-	DeliveryCost    int64
-	TotalAmount     int64
-	DeliveryMethod  string
-	DeliveryAddress string
-	Status          string
+	RentalID         string
+	OrderNumber      string
+	ClientID         string
+	ClientFullName   string
+	ClientPhone      string
+	ClientType       string
+	OrganizationName string
+	INN              string
+	ContactFullName  string
+	ContactID        string
+	DealID           string
+	ToolName         string
+	StartDate        string
+	EndDate          string
+	RentalDays       int
+	RentalPrice      int64
+	DepositAmount    int64
+	DeliveryCost     int64
+	TotalAmount      int64
+	DeliveryMethod   string
+	DeliveryAddress  string
+	Status           string
 }
 
 type ClientSyncData struct {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -217,12 +218,18 @@ func (repository *PostgresRepository) GetRentalSyncData(
 		ctx,
 		`SELECT
 			rr.id::text,
+			rr.order_number,
 			c.id::text,
 			COALESCE(c.full_name, ''),
 			c.phone,
+			COALESCE(s.client_type, c.client_type),
+			COALESCE(s.company_name, ''),
+			COALESCE(s.inn, ''),
+			COALESCE(s.company_contact, ''),
 			COALESCE(c.bitrix_contact_id, ''),
 			COALESCE(rr.bitrix_deal_id, ''),
 			t.name,
+			rr.rental_days,
 			rr.start_date::text,
 			rr.end_date::text,
 			rr.rental_price,
@@ -234,17 +241,24 @@ func (repository *PostgresRepository) GetRentalSyncData(
 			rr.status
 		 FROM rental_requests AS rr
 		 JOIN clients AS c ON c.id = rr.client_id
+		 LEFT JOIN rental_customer_snapshots AS s ON s.rental_request_id = rr.id
 		 JOIN tools AS t ON t.id = rr.tool_id
 		 WHERE rr.id = $1::uuid`,
 		rentalID,
 	).Scan(
 		&data.RentalID,
+		&data.OrderNumber,
 		&data.ClientID,
 		&data.ClientFullName,
 		&data.ClientPhone,
+		&data.ClientType,
+		&data.OrganizationName,
+		&data.INN,
+		&data.ContactFullName,
 		&data.ContactID,
 		&data.DealID,
 		&data.ToolName,
+		&data.RentalDays,
 		&data.StartDate,
 		&data.EndDate,
 		&data.RentalPrice,
@@ -646,4 +660,339 @@ func truncateError(message string) string {
 		return message
 	}
 	return string([]rune(message)[:2000])
+}
+
+func (repository *PostgresRepository) CreateRentalFromBitrix(
+	ctx context.Context,
+	deal DealFull,
+	contact ContactDetails,
+	targetStatus string,
+) (string, error) {
+	if deal.ID == "" {
+		return "", errors.New("empty Bitrix deal ID")
+	}
+
+	transaction, err := repository.database.Begin(ctx)
+	if err != nil {
+		return "", fmt.Errorf("begin rental import from Bitrix: %w", err)
+	}
+	defer func() {
+		_ = transaction.Rollback(ctx)
+	}()
+
+	var existingID string
+	err = transaction.QueryRow(
+		ctx,
+		`SELECT id::text FROM rental_requests WHERE bitrix_deal_id = $1`,
+		deal.ID,
+	).Scan(&existingID)
+	if err == nil {
+		return existingID, nil
+	}
+
+	phone := normalizePhone(contact.Phone)
+	if phone == "+79990000000" && deal.ClientPhone != "" {
+		phone = normalizePhone(deal.ClientPhone)
+	}
+
+	fullName := strings.TrimSpace(contact.FullName)
+	if fullName == "" {
+		fullName = strings.TrimSpace(deal.ClientName)
+	}
+	if fullName == "" {
+		fullName = strings.TrimSpace(deal.Title)
+	}
+	if fullName == "" {
+		fullName = "Клиент Битрикс24"
+	}
+
+	var clientID string
+	err = transaction.QueryRow(
+		ctx,
+		`SELECT id::text FROM clients WHERE phone = $1`,
+		phone,
+	).Scan(&clientID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = transaction.QueryRow(
+			ctx,
+			`INSERT INTO clients (phone, full_name, bitrix_contact_id, status)
+			 VALUES ($1, $2, NULLIF($3, ''), 'verified')
+			 RETURNING id::text`,
+			phone,
+			fullName,
+			deal.ContactID,
+		).Scan(&clientID)
+		if err != nil {
+			return "", fmt.Errorf("create client for Bitrix deal: %w", err)
+		}
+	} else if err != nil {
+		return "", fmt.Errorf("lookup client for Bitrix deal: %w", err)
+	} else if deal.ContactID != "" {
+		_, _ = transaction.Exec(
+			ctx,
+			`UPDATE clients
+			 SET bitrix_contact_id = $2
+			 WHERE id = $1::uuid AND (bitrix_contact_id IS NULL OR bitrix_contact_id = '')`,
+			clientID,
+			deal.ContactID,
+		)
+	}
+
+	searchTool := strings.TrimSpace(deal.ToolName)
+	if searchTool == "" {
+		searchTool = strings.TrimSpace(deal.Title)
+	}
+
+	var toolID string
+	var defaultDailyPrice, defaultDeposit int64
+	err = transaction.QueryRow(
+		ctx,
+		`SELECT id::text, daily_price, deposit_amount
+		 FROM tools
+		 WHERE $1 <> '' AND (name ILIKE '%' || $1 || '%' OR $1 ILIKE '%' || name || '%')
+		 ORDER BY id
+		 LIMIT 1`,
+		searchTool,
+	).Scan(&toolID, &defaultDailyPrice, &defaultDeposit)
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = transaction.QueryRow(
+			ctx,
+			`SELECT id::text, daily_price, deposit_amount
+			 FROM tools
+			 ORDER BY id
+			 LIMIT 1`,
+		).Scan(&toolID, &defaultDailyPrice, &defaultDeposit)
+	}
+	if err != nil {
+		return "", fmt.Errorf("find tool for Bitrix deal: %w", err)
+	}
+
+	now := time.Now().UTC()
+	today := now.Truncate(24 * time.Hour)
+	startDate := parseDateOrDefault(deal.BeginDate, today)
+	endDate := parseDateOrDefault(deal.CloseDate, startDate.AddDate(0, 0, 1))
+	if endDate.Before(startDate) {
+		endDate = startDate.AddDate(0, 0, 1)
+	}
+	rentalDays := int(endDate.Sub(startDate).Hours()/24) + 1
+	if rentalDays < 1 {
+		rentalDays = 1
+	}
+	endDate = startDate.AddDate(0, 0, rentalDays-1)
+
+	var toolUnitID string
+	err = transaction.QueryRow(
+		ctx,
+		`SELECT tu.id::text
+		 FROM tool_units AS tu
+		 WHERE tu.tool_id = $1::uuid
+		   AND tu.status = 'available'
+		   AND NOT EXISTS (
+			SELECT 1 FROM rental_requests AS rr
+			WHERE rr.tool_unit_id = tu.id
+			  AND rr.status IN (
+				'pending_manager', 'awaiting_payment', 'paid', 'preparing',
+				'ready', 'handed_to_courier', 'rented', 'awaiting_return', 'inspection'
+			  )
+			  AND rr.rental_period && daterange($2::date, $3::date, '[]')
+		   )
+		 ORDER BY tu.inventory_number
+		 LIMIT 1`,
+		toolID,
+		startDate,
+		endDate,
+	).Scan(&toolUnitID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = transaction.QueryRow(
+			ctx,
+			`SELECT tu.id::text
+			 FROM tool_units AS tu
+			 WHERE tu.tool_id = $1::uuid
+			 ORDER BY tu.inventory_number
+			 LIMIT 1`,
+			toolID,
+		).Scan(&toolUnitID)
+	}
+	if err != nil {
+		return "", fmt.Errorf("select tool unit for Bitrix deal: %w", err)
+	}
+
+	depositAmount := parseKopecks(deal.Deposit)
+	if depositAmount <= 0 {
+		depositAmount = defaultDeposit
+	}
+	rentalPrice := defaultDailyPrice * int64(rentalDays)
+	deliveryCost := int64(0)
+	totalAmount := rentalPrice + depositAmount + deliveryCost
+
+	deliveryMethod := "self_pickup"
+	var deliveryAddress *string
+	if strings.TrimSpace(deal.Address) != "" {
+		deliveryMethod = "courier"
+		trimmedAddr := strings.TrimSpace(deal.Address)
+		deliveryAddress = &trimmedAddr
+	}
+
+	status := targetStatus
+	if !isValidRentalStatus(status) {
+		status = "pending_manager"
+	}
+
+	var rentalID, orderNumber string
+	err = transaction.QueryRow(
+		ctx,
+		`INSERT INTO rental_requests (
+			client_id,
+			tool_id,
+			tool_unit_id,
+			start_date,
+			end_date,
+			rental_days,
+			rental_price,
+			deposit_amount,
+			delivery_cost,
+			total_amount,
+			delivery_method,
+			delivery_address,
+			status,
+			expires_at,
+			bitrix_deal_id,
+			created_at,
+			updated_at
+		)
+		VALUES (
+			$1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7, $8, $9, $10,
+			$11, $12, $13, $14, $15, NOW(), NOW()
+		)
+		RETURNING id::text, order_number`,
+		clientID,
+		toolID,
+		toolUnitID,
+		startDate,
+		endDate,
+		rentalDays,
+		rentalPrice,
+		depositAmount,
+		deliveryCost,
+		totalAmount,
+		deliveryMethod,
+		deliveryAddress,
+		status,
+		now.Add(24*time.Hour),
+		deal.ID,
+	).Scan(&rentalID, &orderNumber)
+	if err != nil {
+		return "", fmt.Errorf("insert imported rental from Bitrix: %w", err)
+	}
+
+	if _, err := transaction.Exec(
+		ctx,
+		`INSERT INTO rental_customer_snapshots (
+			rental_request_id, order_number, client_type, full_name, created_at
+		)
+		VALUES ($1::uuid, $2, 'individual', $3, NOW())
+		ON CONFLICT (rental_request_id) DO NOTHING`,
+		rentalID,
+		orderNumber,
+		fullName,
+	); err != nil {
+		return "", fmt.Errorf("insert rental customer snapshot: %w", err)
+	}
+
+	holdStatus := "active"
+	if status == "paid" || status == "rented" || status == "ready" {
+		holdStatus = "confirmed"
+	}
+	if _, err := transaction.Exec(
+		ctx,
+		`INSERT INTO tool_holds (
+			rental_request_id, tool_unit_id, start_date, end_date, status, expires_at, created_at, updated_at
+		)
+		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, NOW(), NOW())
+		ON CONFLICT (rental_request_id) DO NOTHING`,
+		rentalID,
+		toolUnitID,
+		startDate,
+		endDate,
+		holdStatus,
+		now.Add(24*time.Hour),
+	); err != nil {
+		return "", fmt.Errorf("insert tool hold: %w", err)
+	}
+
+	if _, err := transaction.Exec(
+		ctx,
+		`INSERT INTO rental_status_history (
+			rental_request_id, from_status, to_status, actor_type, actor_id, created_at
+		)
+		VALUES ($1::uuid, NULL, $2, 'integration', $3, NOW())`,
+		rentalID,
+		status,
+		deal.ID,
+	); err != nil {
+		return "", fmt.Errorf("insert rental status history: %w", err)
+	}
+
+	if err := transaction.Commit(ctx); err != nil {
+		return "", fmt.Errorf("commit imported Bitrix rental: %w", err)
+	}
+	return rentalID, nil
+}
+
+func normalizePhone(phone string) string {
+	digits := ""
+	for _, r := range phone {
+		if r >= '0' && r <= '9' {
+			digits += string(r)
+		}
+	}
+	if len(digits) == 11 && (digits[0] == '7' || digits[0] == '8') {
+		return "+7" + digits[1:]
+	}
+	if len(digits) == 10 {
+		return "+7" + digits
+	}
+	if len(digits) >= 10 {
+		return "+" + digits
+	}
+	return "+79990000000"
+}
+
+func parseKopecks(val string) int64 {
+	val = strings.TrimSpace(val)
+	if idx := strings.Index(val, "|"); idx != -1 {
+		val = val[:idx]
+	}
+	val = strings.ReplaceAll(val, " ", "")
+	val = strings.ReplaceAll(val, ",", ".")
+	f, err := strconv.ParseFloat(val, 64)
+	if err != nil {
+		return 0
+	}
+	return int64(f * 100)
+}
+
+func parseDateOrDefault(str string, fallback time.Time) time.Time {
+	str = strings.TrimSpace(str)
+	if str == "" {
+		return fallback
+	}
+	if t, err := time.Parse(time.RFC3339, str); err == nil {
+		return t.Truncate(24 * time.Hour)
+	}
+	if t, err := time.Parse("2006-01-02", str); err == nil {
+		return t
+	}
+	return fallback
+}
+
+func isValidRentalStatus(status string) bool {
+	switch status {
+	case "pending_manager", "awaiting_payment", "paid", "preparing",
+		"ready", "handed_to_courier", "rented", "awaiting_return",
+		"inspection", "completed", "rejected", "cancelled", "payment_expired":
+		return true
+	default:
+		return false
+	}
 }

@@ -12,6 +12,8 @@ import (
 	"github.com/pro-instrument/pro-instrument/apps/backend/internal/config"
 	"github.com/pro-instrument/pro-instrument/apps/backend/internal/database"
 	"github.com/pro-instrument/pro-instrument/apps/backend/internal/integrations/bitrix"
+	"github.com/pro-instrument/pro-instrument/apps/backend/internal/integrations/yookassa"
+	"github.com/pro-instrument/pro-instrument/apps/backend/internal/payments"
 	"github.com/pro-instrument/pro-instrument/apps/backend/internal/rentals"
 )
 
@@ -55,6 +57,29 @@ func run(logger *log.Logger) error {
 	)
 	client := bitrix.NewHTTPClient(bitrixSettings.BaseURL, bitrixSettings.HTTPTimeout)
 	worker := bitrix.NewWorker(repository, client, statusService, bitrixSettings, logger)
+
+	yooSettings, err := config.LoadYooKassa(os.Getenv)
+	if err == nil && yooSettings.Enabled {
+		yooClient := yookassa.NewHTTPClient(
+			yookassa.DefaultBaseURL,
+			yooSettings.ShopID,
+			yooSettings.SecretKey,
+			yooSettings.HTTPTimeout,
+		)
+		paymentsRepo := payments.NewPostgresRepository(pool)
+		paymentsService := payments.NewService(
+			paymentsRepo,
+			yooClient,
+			yooSettings.Enabled,
+			yooSettings.ReturnURL,
+			yooSettings.ReceiptsEnabled,
+			yooSettings.RetryBase,
+			yooSettings.MaxAttempts,
+			logger,
+		).SetFiscalParameters(yooSettings.TaxSystemCode, yooSettings.VATCode)
+		worker.SetDepositRefunder(paymentsService)
+		logger.Print("YooKassa automatic deposit refund enabled in Bitrix worker")
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

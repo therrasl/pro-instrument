@@ -151,6 +151,94 @@ func (client *HTTPClient) GetDeal(
 	return DealState{ID: id, CategoryID: categoryID, StageID: raw.StageID}, nil
 }
 
+func (client *HTTPClient) GetDealFull(
+	ctx context.Context,
+	dealID string,
+) (DealFull, error) {
+	result, err := client.call(ctx, "crm.deal.get", map[string]any{"id": dealID})
+	if err != nil {
+		return DealFull{}, err
+	}
+	var raw struct {
+		ID          json.RawMessage `json:"ID"`
+		Title       string          `json:"TITLE"`
+		CategoryID  json.RawMessage `json:"CATEGORY_ID"`
+		StageID     string          `json:"STAGE_ID"`
+		ContactID   json.RawMessage `json:"CONTACT_ID"`
+		Opportunity string          `json:"OPPORTUNITY"`
+		BeginDate   string          `json:"BEGINDATE"`
+		CloseDate   string          `json:"CLOSEDATE"`
+		ToolName    string          `json:"UF_CRM_1755209429146"`
+		ClientName  string          `json:"UF_CRM_1755209635979"`
+		ClientPhone string          `json:"UF_CRM_1756648546267"`
+		Deposit     string          `json:"UF_CRM_1758015711985"`
+		Address     string          `json:"UF_CRM_1755209641247"`
+	}
+	if err := json.Unmarshal(result, &raw); err != nil {
+		return DealFull{}, fmt.Errorf("decode full Bitrix deal: %w", err)
+	}
+	id, err := decodeID(raw.ID)
+	if err != nil {
+		return DealFull{}, fmt.Errorf("decode Bitrix deal id: %w", err)
+	}
+	catID, _ := decodeID(raw.CategoryID)
+	contactID, _ := decodeID(raw.ContactID)
+
+	return DealFull{
+		ID:          id,
+		Title:       raw.Title,
+		CategoryID:  catID,
+		StageID:     raw.StageID,
+		ContactID:   contactID,
+		Opportunity: raw.Opportunity,
+		BeginDate:   raw.BeginDate,
+		CloseDate:   raw.CloseDate,
+		ToolName:    raw.ToolName,
+		ClientName:  raw.ClientName,
+		ClientPhone: raw.ClientPhone,
+		Deposit:     raw.Deposit,
+		Address:     raw.Address,
+	}, nil
+}
+
+func (client *HTTPClient) GetContact(
+	ctx context.Context,
+	contactID string,
+) (ContactDetails, error) {
+	if contactID == "" {
+		return ContactDetails{}, errors.New("empty contact id")
+	}
+	result, err := client.call(ctx, "crm.contact.get", map[string]any{"id": contactID})
+	if err != nil {
+		return ContactDetails{}, err
+	}
+	var raw struct {
+		ID       json.RawMessage `json:"ID"`
+		Name     string          `json:"NAME"`
+		LastName string          `json:"LAST_NAME"`
+		Phones   []struct {
+			Value string `json:"VALUE"`
+		} `json:"PHONE"`
+	}
+	if err := json.Unmarshal(result, &raw); err != nil {
+		return ContactDetails{}, fmt.Errorf("decode Bitrix contact: %w", err)
+	}
+	id, err := decodeID(raw.ID)
+	if err != nil {
+		return ContactDetails{}, fmt.Errorf("decode Bitrix contact id: %w", err)
+	}
+	fullName := strings.TrimSpace(raw.Name + " " + raw.LastName)
+	phone := ""
+	if len(raw.Phones) > 0 {
+		phone = raw.Phones[0].Value
+	}
+	return ContactDetails{
+		ID:       id,
+		FullName: fullName,
+		Phone:    phone,
+	}, nil
+}
+
 func (client *HTTPClient) call(
 	ctx context.Context,
 	method string,

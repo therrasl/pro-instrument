@@ -67,7 +67,7 @@ func run(logger *log.Logger) error {
 		settings.RetryBase,
 		settings.MaxAttempts,
 		logger,
-	)
+	).SetFiscalParameters(settings.TaxSystemCode, settings.VATCode)
 
 	for {
 		processed, err := service.RunOnce(ctx)

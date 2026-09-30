@@ -116,3 +116,69 @@ func TestGetPaymentAndTemporaryError(t *testing.T) {
 		t.Fatalf("unexpected fetched payment: %#v err=%v", payment, err)
 	}
 }
+
+func TestCreateRefundAndGetRefund(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(
+		response http.ResponseWriter,
+		request *http.Request,
+	) {
+		shopID, secret, ok := request.BasicAuth()
+		if !ok || shopID != "shop-1" || secret != "secret-1" {
+			t.Fatalf("unexpected Basic Auth: shop=%q secret=%q ok=%t", shopID, secret, ok)
+		}
+		switch {
+		case request.Method == http.MethodPost && request.URL.Path == "/refunds":
+			if request.Header.Get("Idempotence-Key") != "refund-key-1" {
+				t.Fatalf("unexpected idempotency key: %q", request.Header.Get("Idempotence-Key"))
+			}
+			var body CreateRefundRequest
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				t.Fatalf("decode refund request: %v", err)
+			}
+			if body.PaymentID != "pay-1" || body.Amount.Value != "1500.00" || body.Amount.Currency != "RUB" {
+				t.Fatalf("unexpected refund request body: %#v", body)
+			}
+			_ = json.NewEncoder(response).Encode(map[string]any{
+				"id":         "refund-1",
+				"payment_id": "pay-1",
+				"status":     "succeeded",
+				"amount":     map[string]string{"value": "1500.00", "currency": "RUB"},
+			})
+		case request.Method == http.MethodGet && request.URL.Path == "/refunds/refund-1":
+			_ = json.NewEncoder(response).Encode(map[string]any{
+				"id":         "refund-1",
+				"payment_id": "pay-1",
+				"status":     "succeeded",
+				"amount":     map[string]string{"value": "1500.00", "currency": "RUB"},
+			})
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "shop-1", "secret-1", time.Second)
+	refund, err := client.CreateRefund(
+		context.Background(),
+		"refund-key-1",
+		CreateRefundRequest{
+			PaymentID:   "pay-1",
+			Amount:      Money{Value: "1500.00", Currency: "RUB"},
+			Description: "Возврат обеспечительного платежа",
+		},
+	)
+	if err != nil {
+		t.Fatalf("create refund: %v", err)
+	}
+	if refund.ID != "refund-1" || refund.Status != "succeeded" {
+		t.Fatalf("unexpected refund result: %#v", refund)
+	}
+
+	fetched, err := client.GetRefund(context.Background(), "refund-1")
+	if err != nil {
+		t.Fatalf("get refund: %v", err)
+	}
+	if fetched.ID != "refund-1" || fetched.Status != "succeeded" {
+		t.Fatalf("unexpected fetched refund: %#v", fetched)
+	}
+}

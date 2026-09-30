@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/pro-instrument/pro-instrument/apps/backend/internal/config"
+	"github.com/pro-instrument/pro-instrument/apps/backend/internal/payments"
 	"github.com/pro-instrument/pro-instrument/apps/backend/internal/rentals"
 )
 
@@ -143,6 +144,15 @@ func (repository *fakeWorkerRepository) RejectInbound(
 	time.Time,
 ) error {
 	return nil
+}
+
+func (repository *fakeWorkerRepository) CreateRentalFromBitrix(
+	context.Context,
+	DealFull,
+	ContactDetails,
+	string,
+) (string, error) {
+	return "test-rental-id", nil
 }
 
 type unusedStatusUpdater struct{}
@@ -345,9 +355,14 @@ func TestDealCreatedOnlyOnce(t *testing.T) {
 		)
 	}
 	for _, fragment := range []string{
+		repository.rentalData.OrderNumber,
 		repository.rentalData.RentalID,
 		repository.rentalData.ClientPhone,
 		repository.rentalData.ToolName,
+		"Юридическое лицо",
+		repository.rentalData.OrganizationName,
+		repository.rentalData.INN,
+		repository.rentalData.ContactFullName,
 		"1000.00 RUB",
 		"2000.00 RUB",
 	} {
@@ -518,21 +533,26 @@ func TestDealUpdateUsesMappedStage(t *testing.T) {
 
 func testRentalSyncData() RentalSyncData {
 	return RentalSyncData{
-		RentalID:        "50000000-0000-4000-8000-000000000001",
-		ClientID:        "40000000-0000-4000-8000-000000000001",
-		ClientFullName:  "Иван Иванов",
-		ClientPhone:     "+79990000001",
-		ContactID:       "42",
-		ToolName:        "Перфоратор",
-		StartDate:       "2026-08-01",
-		EndDate:         "2026-08-03",
-		RentalPrice:     100_000,
-		DepositAmount:   200_000,
-		DeliveryCost:    50_000,
-		TotalAmount:     350_000,
-		DeliveryMethod:  "courier",
-		DeliveryAddress: "Москва",
-		Status:          "pending_manager",
+		RentalID:         "50000000-0000-4000-8000-000000000001",
+		OrderNumber:      "PI-2026-000123",
+		ClientID:         "40000000-0000-4000-8000-000000000001",
+		ClientFullName:   "Иван Иванов",
+		ClientPhone:      "+79990000001",
+		ClientType:       "legal_entity",
+		OrganizationName: "ООО «Демо Инструмент»",
+		INN:              "7705432109",
+		ContactFullName:  "Анна Соколова",
+		ContactID:        "42",
+		ToolName:         "Перфоратор",
+		StartDate:        "2026-08-01",
+		EndDate:          "2026-08-03",
+		RentalPrice:      100_000,
+		DepositAmount:    200_000,
+		DeliveryCost:     50_000,
+		TotalAmount:      350_000,
+		DeliveryMethod:   "courier",
+		DeliveryAddress:  "Москва",
+		Status:           "pending_manager",
 	}
 }
 
@@ -557,5 +577,78 @@ func testBitrixSettings() config.BitrixConfig {
 			Completed:       "C12:WON",
 			Failed:          "C12:LOSE",
 		},
+	}
+}
+
+type refundStub struct {
+	called   bool
+	rentalID string
+}
+
+func (r *refundStub) RefundDeposit(
+	_ context.Context,
+	rentalID string,
+	_ *int64,
+	_ string,
+) (payments.RefundResult, error) {
+	r.called = true
+	r.rentalID = rentalID
+	return payments.RefundResult{
+		DepositID: "dep-1",
+		RefundID:  "ref-1",
+		Amount:    150000,
+		Status:    "succeeded",
+	}, nil
+}
+
+func TestInboundCompletedTriggersRefund(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(
+		response http.ResponseWriter,
+		request *http.Request,
+	) {
+		if request.URL.Path != "/crm.deal.get.json" {
+			http.NotFound(response, request)
+			return
+		}
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"result": map[string]any{
+				"ID":          "100",
+				"CATEGORY_ID": "12",
+				"STAGE_ID":    "C12:WON",
+			},
+		})
+	}))
+	defer server.Close()
+
+	repository := &fakeWorkerRepository{}
+	updater := &trackingStatusUpdater{
+		rentalID: "50000000-0000-4000-8000-000000000001",
+		status:   rentals.StatusInspection,
+	}
+	refunder := &refundStub{}
+
+	worker := NewWorker(
+		repository,
+		NewHTTPClient(server.URL, time.Second),
+		updater,
+		testBitrixSettings(),
+		log.New(io.Discard, "", 0),
+	).SetDepositRefunder(refunder)
+
+	event := InboundEvent{
+		ID:           "event-1",
+		BitrixDealID: "100",
+	}
+
+	err := worker.processInbound(context.Background(), event, time.Now())
+	if err != nil {
+		t.Fatalf("unexpected inbound error: %v", err)
+	}
+
+	if !refunder.called {
+		t.Fatal("expected deposit refund to be called when deal completed")
+	}
+	if refunder.rentalID != "50000000-0000-4000-8000-000000000001" {
+		t.Fatalf("unexpected rental id refunded: %s", refunder.rentalID)
 	}
 }

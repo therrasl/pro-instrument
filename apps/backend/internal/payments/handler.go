@@ -17,6 +17,7 @@ const maximumWebhookSize = 1 << 20
 
 type PaymentService interface {
 	Create(context.Context, string, string) (CreateResult, error)
+	RefundDeposit(context.Context, string, *int64, string) (RefundResult, error)
 }
 
 type Handler struct {
@@ -36,6 +37,47 @@ func (handler *Handler) Register(
 		"POST /api/v1/rentals/{id}/payment",
 		bearerAuth(http.HandlerFunc(handler.create)),
 	)
+	mux.Handle(
+		"POST /api/v1/rentals/{id}/refund-deposit",
+		bearerAuth(http.HandlerFunc(handler.refundDeposit)),
+	)
+}
+
+type refundDepositRequest struct {
+	Amount *int64 `json:"amount"`
+	Reason string `json:"reason"`
+}
+
+func (handler *Handler) refundDeposit(response http.ResponseWriter, request *http.Request) {
+	rentalID := request.PathValue("id")
+	if !validUUID(rentalID) {
+		writeError(response, http.StatusBadRequest, "invalid rental id")
+		return
+	}
+
+	var body refundDepositRequest
+	if request.Body != nil {
+		_ = json.NewDecoder(io.LimitReader(request.Body, 1<<16)).Decode(&body)
+	}
+
+	result, err := handler.service.RefundDeposit(request.Context(), rentalID, body.Amount, body.Reason)
+	switch {
+	case err == nil:
+		writeJSON(response, http.StatusOK, result)
+	case errors.Is(err, ErrDisabled):
+		writeError(response, http.StatusServiceUnavailable, "payments are disabled")
+	case errors.Is(err, ErrRentalNotFound):
+		writeError(response, http.StatusNotFound, "deposit not found for rental")
+	case errors.Is(err, ErrDepositNotPaid):
+		writeError(response, http.StatusConflict, "deposit is not paid yet")
+	case errors.Is(err, ErrNoRefundableAmount):
+		writeError(response, http.StatusConflict, "no refundable deposit remaining")
+	case errors.Is(err, ErrRefundExceedsDeposit):
+		writeError(response, http.StatusBadRequest, "refund amount exceeds refundable deposit")
+	default:
+		handler.logger.Printf("refund deposit failed: %v", err)
+		writeError(response, http.StatusInternalServerError, "failed to refund deposit")
+	}
 }
 
 func (handler *Handler) create(response http.ResponseWriter, request *http.Request) {

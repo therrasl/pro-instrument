@@ -28,6 +28,9 @@ var (
 	ErrPaymentRequiresReview = errors.New("payment requires manual reconciliation")
 	ErrUnsupportedEvent      = errors.New("unsupported payment event")
 	ErrWebhookMismatch       = errors.New("payment webhook does not match stored payment")
+	ErrDepositNotPaid       = errors.New("deposit is not paid")
+	ErrNoRefundableAmount   = errors.New("no refundable deposit amount remaining")
+	ErrRefundExceedsDeposit = errors.New("refund amount exceeds refundable deposit")
 )
 
 type Repository interface {
@@ -73,6 +76,8 @@ type Repository interface {
 	) error
 	RetryEvent(context.Context, string, time.Time, string) error
 	RejectEvent(context.Context, string, string, time.Time) error
+	GetDepositForRefund(context.Context, string) (DepositRefundData, error)
+	RecordDepositRefund(context.Context, string, int64, string, json.RawMessage, time.Time) error
 }
 
 type Service struct {
@@ -81,6 +86,8 @@ type Service struct {
 	enabled         bool
 	returnURL       string
 	receiptsEnabled bool
+	taxSystemCode   *int
+	vatCode         int
 	retryBase       time.Duration
 	maxAttempts     int
 	logger          *log.Logger
@@ -97,17 +104,31 @@ func NewService(
 	maxAttempts int,
 	logger *log.Logger,
 ) *Service {
+	defaultTaxSystem := 2
 	return &Service{
 		repository:      repository,
 		provider:        provider,
 		enabled:         enabled,
 		returnURL:       returnURL,
 		receiptsEnabled: receiptsEnabled,
+		taxSystemCode:   &defaultTaxSystem,
+		vatCode:         1,
 		retryBase:       retryBase,
 		maxAttempts:     maxAttempts,
 		logger:          logger,
 		now:             time.Now,
 	}
+}
+
+func (service *Service) SetFiscalParameters(taxSystemCode int, vatCode int) *Service {
+	if taxSystemCode > 0 {
+		code := taxSystemCode
+		service.taxSystemCode = &code
+	}
+	if vatCode > 0 {
+		service.vatCode = vatCode
+	}
+	return service
 }
 
 func (service *Service) Create(
@@ -156,9 +177,22 @@ func (service *Service) Create(
 		},
 	}
 	if service.receiptsEnabled {
+		vatCode := service.vatCode
+		if vatCode <= 0 {
+			vatCode = 1
+		}
+		items := make([]yookassa.ReceiptItem, len(data.ReceiptItems))
+		for i, item := range data.ReceiptItems {
+			item.VATCode = vatCode
+			items[i] = item
+		}
 		input.Receipt = &yookassa.Receipt{
-			Customer: yookassa.ReceiptCustomer{Email: data.ClientEmail},
-			Items:    data.ReceiptItems,
+			Customer: yookassa.ReceiptCustomer{
+				Email: data.ClientEmail,
+				Phone: data.ClientPhone,
+			},
+			TaxSystemCode: service.taxSystemCode,
+			Items:         items,
 		}
 	}
 
@@ -207,6 +241,129 @@ func (service *Service) Create(
 		)
 	}
 	return CreateResult{Payment: saved, Created: created}, nil
+}
+
+func (service *Service) RefundDeposit(
+	ctx context.Context,
+	rentalID string,
+	amount *int64,
+	reason string,
+) (RefundResult, error) {
+	if !service.enabled {
+		return RefundResult{}, ErrDisabled
+	}
+	now := service.now().UTC()
+
+	deposit, err := service.repository.GetDepositForRefund(ctx, rentalID)
+	if err != nil {
+		return RefundResult{}, err
+	}
+
+	if deposit.DepositStatus == "refunded" || deposit.RefundableAmount <= 0 {
+		return RefundResult{
+			DepositID:  deposit.DepositID,
+			PaymentID:  deposit.PaymentID,
+			Amount:     0,
+			Status:     "already_refunded",
+			RefundedAt: now,
+		}, nil
+	}
+	if deposit.PaymentStatus != StatusSucceeded || deposit.ProviderPaymentID == "" {
+		return RefundResult{}, ErrDepositNotPaid
+	}
+
+	refundAmount := deposit.RefundableAmount
+	if amount != nil && *amount > 0 {
+		if *amount > deposit.RefundableAmount {
+			return RefundResult{}, ErrRefundExceedsDeposit
+		}
+		refundAmount = *amount
+	}
+
+	idempotencyKey := fmt.Sprintf("refund:%s:%d", deposit.DepositID, refundAmount)
+	description := "Возврат обеспечительного платежа"
+	if deposit.OrderNumber != "" {
+		description = fmt.Sprintf("Возврат обеспечительного платежа по заказу %s", deposit.OrderNumber)
+	}
+	if reason != "" {
+		description += ": " + reason
+	}
+	if len(description) > 250 {
+		description = description[:250]
+	}
+
+	req := yookassa.CreateRefundRequest{
+		PaymentID: deposit.ProviderPaymentID,
+		Amount: yookassa.Money{
+			Value:    formatKopecks(refundAmount),
+			Currency: "RUB",
+		},
+		Description: description,
+	}
+
+	if service.receiptsEnabled {
+		customer := yookassa.ReceiptCustomer{
+			Email: deposit.ClientEmail,
+			Phone: deposit.ClientPhone,
+		}
+		vatCode := service.vatCode
+		if vatCode <= 0 {
+			vatCode = 1
+		}
+		req.Receipt = &yookassa.Receipt{
+			Customer:      customer,
+			TaxSystemCode: service.taxSystemCode,
+			Items: []yookassa.ReceiptItem{
+				{
+					Description:    "Возврат: Обеспечительный платеж",
+					Quantity:       "1.00",
+					Amount: yookassa.Money{
+						Value:    formatKopecks(refundAmount),
+						Currency: "RUB",
+					},
+					VATCode:        vatCode,
+					PaymentMode:    "full_payment",
+					PaymentSubject: "payment",
+				},
+			},
+		}
+	}
+
+	refund, err := service.provider.CreateRefund(ctx, idempotencyKey, req)
+	if err != nil {
+		service.logger.Printf("YooKassa refund failed for rental %s: %v", rentalID, err)
+		return RefundResult{}, fmt.Errorf("provider refund failed: %w", err)
+	}
+
+	if err := service.repository.RecordDepositRefund(
+		ctx,
+		deposit.DepositID,
+		refundAmount,
+		refund.ID,
+		refund.Raw,
+		now,
+	); err != nil {
+		service.logger.Printf("record deposit refund failed for rental %s: %v", rentalID, err)
+		return RefundResult{}, fmt.Errorf("record deposit refund: %w", err)
+	}
+
+	service.logger.Printf(
+		"YooKassa refund processed: rental=%s deposit=%s refund_id=%s amount=%s status=%s",
+		rentalID,
+		deposit.DepositID,
+		refund.ID,
+		formatKopecks(refundAmount),
+		refund.Status,
+	)
+
+	return RefundResult{
+		DepositID:  deposit.DepositID,
+		PaymentID:  deposit.PaymentID,
+		RefundID:   refund.ID,
+		Amount:     refundAmount,
+		Status:     refund.Status,
+		RefundedAt: now,
+	}, nil
 }
 
 func (service *Service) StoreWebhook(

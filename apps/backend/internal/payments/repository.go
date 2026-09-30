@@ -52,6 +52,7 @@ func (repository *PostgresRepository) PreparePayment(
 	var holdExpiresAt time.Time
 	var paymentExpiresAt time.Time
 	var toolName string
+	var clientPhone string
 	err = transaction.QueryRow(
 		ctx,
 		`SELECT
@@ -73,7 +74,8 @@ func (repository *PostgresRepository) PreparePayment(
 			h.status,
 			h.expires_at,
 			rr.expires_at,
-			t.name
+			t.name,
+			c.phone
 		 FROM rental_requests AS rr
 		 JOIN clients AS c ON c.id = rr.client_id
 		 JOIN tool_holds AS h ON h.rental_request_id = rr.id
@@ -98,6 +100,7 @@ func (repository *PostgresRepository) PreparePayment(
 		&holdExpiresAt,
 		&paymentExpiresAt,
 		&toolName,
+		&clientPhone,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Payment{}, CreateData{}, false, ErrRentalNotFound
@@ -107,7 +110,8 @@ func (repository *PostgresRepository) PreparePayment(
 	}
 
 	data := CreateData{
-		ToolName: toolName,
+		ClientPhone: clientPhone,
+		ToolName:    toolName,
 		ReceiptItems: receiptItems(
 			toolName,
 			rentalAmount,
@@ -135,7 +139,7 @@ func (repository *PostgresRepository) PreparePayment(
 	if holdStatus != "confirmed" || !holdExpiresAt.After(now) {
 		return Payment{}, CreateData{}, false, ErrHoldNotConfirmed
 	}
-	if receiptsEnabled && data.ClientEmail == "" {
+	if receiptsEnabled && data.ClientEmail == "" && data.ClientPhone == "" {
 		return Payment{}, CreateData{}, false, ErrReceiptEmailRequired
 	}
 
@@ -1070,7 +1074,7 @@ func receiptItems(
 		})
 	}
 	add("Аренда: "+toolName, rentalAmount, "service")
-	add("Обеспечительный платеж (залог)", depositAmount, "lien")
+	add("Обеспечительный платеж", depositAmount, "payment")
 	add("Доставка", deliveryAmount, "service")
 	return items
 }
@@ -1214,4 +1218,164 @@ func scanEvent(row rowScanner) (PaymentEvent, error) {
 		return PaymentEvent{}, err
 	}
 	return event, nil
+}
+
+func (repository *PostgresRepository) GetDepositForRefund(
+	ctx context.Context,
+	rentalID string,
+) (DepositRefundData, error) {
+	var data DepositRefundData
+	var providerPaymentID pgtype.Text
+	var email pgtype.Text
+	err := repository.database.QueryRow(
+		ctx,
+		`SELECT
+			d.id::text,
+			d.rental_request_id::text,
+			rr.order_number,
+			d.payment_id::text,
+			p.provider_payment_id,
+			d.original_amount,
+			d.refundable_amount,
+			d.refunded_amount,
+			d.withheld_amount,
+			d.status,
+			p.status,
+			c.phone,
+			c.email
+		 FROM deposits AS d
+		 JOIN payments AS p ON p.id = d.payment_id
+		 JOIN rental_requests AS rr ON rr.id = d.rental_request_id
+		 JOIN clients AS c ON c.id = rr.client_id
+		 WHERE d.rental_request_id = $1::uuid`,
+		rentalID,
+	).Scan(
+		&data.DepositID,
+		&data.RentalRequestID,
+		&data.OrderNumber,
+		&data.PaymentID,
+		&providerPaymentID,
+		&data.OriginalAmount,
+		&data.RefundableAmount,
+		&data.RefundedAmount,
+		&data.WithheldAmount,
+		&data.DepositStatus,
+		&data.PaymentStatus,
+		&data.ClientPhone,
+		&email,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return DepositRefundData{}, ErrRentalNotFound
+	}
+	if err != nil {
+		return DepositRefundData{}, fmt.Errorf("get deposit for refund: %w", err)
+	}
+	if providerPaymentID.Valid {
+		data.ProviderPaymentID = providerPaymentID.String
+	}
+	if email.Valid {
+		data.ClientEmail = email.String
+	}
+	return data, nil
+}
+
+func (repository *PostgresRepository) RecordDepositRefund(
+	ctx context.Context,
+	depositID string,
+	amount int64,
+	refundID string,
+	providerPayload json.RawMessage,
+	now time.Time,
+) error {
+	transaction, err := repository.database.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin record deposit refund: %w", err)
+	}
+	defer func() {
+		_ = transaction.Rollback(ctx)
+	}()
+
+	var rentalID string
+	var paymentID string
+	var originalAmount int64
+	var currentRefundable int64
+	var currentRefunded int64
+	err = transaction.QueryRow(
+		ctx,
+		`SELECT rental_request_id::text, payment_id::text, original_amount, refundable_amount, refunded_amount
+		 FROM deposits
+		 WHERE id = $1::uuid
+		 FOR UPDATE`,
+		depositID,
+	).Scan(&rentalID, &paymentID, &originalAmount, &currentRefundable, &currentRefunded)
+	if err != nil {
+		return fmt.Errorf("lock deposit for refund: %w", err)
+	}
+
+	newRefundable := currentRefundable - amount
+	newRefunded := currentRefunded + amount
+	if newRefundable < 0 {
+		return errors.New("refund amount exceeds refundable deposit")
+	}
+
+	newStatus := "partially_refunded"
+	if newRefundable == 0 {
+		newStatus = "refunded"
+	}
+
+	_, err = transaction.Exec(
+		ctx,
+		`UPDATE deposits
+		 SET
+			refundable_amount = $2,
+			refunded_amount = $3,
+			status = $4,
+			updated_at = $5
+		 WHERE id = $1::uuid`,
+		depositID,
+		newRefundable,
+		newRefunded,
+		newStatus,
+		now,
+	)
+	if err != nil {
+		return fmt.Errorf("update deposit refund: %w", err)
+	}
+
+	_, err = transaction.Exec(
+		ctx,
+		`INSERT INTO payment_audit_logs (
+			payment_id,
+			rental_request_id,
+			action,
+			actor_type,
+			actor_id,
+			details,
+			created_at
+		)
+		VALUES (
+			$1::uuid,
+			$2::uuid,
+			'deposit.refunded',
+			'system',
+			'yookassa',
+			jsonb_build_object(
+				'refund_id', $3::text,
+				'amount', $4::bigint,
+				'payload', $5::jsonb
+			),
+			$6
+		)`,
+		paymentID,
+		rentalID,
+		refundID,
+		amount,
+		providerPayload,
+		now,
+	)
+	if err != nil {
+		return fmt.Errorf("audit deposit refund: %w", err)
+	}
+
+	return transaction.Commit(ctx)
 }

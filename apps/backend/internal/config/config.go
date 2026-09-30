@@ -44,6 +44,7 @@ type Config struct {
 	MaxUploadSize int64
 	RentalHoldTTL time.Duration
 	CourierFee    int64
+	PickupAddress string
 	Bitrix        BitrixConfig
 	YooKassa      YooKassaConfig
 	Demo          DemoConfig
@@ -99,6 +100,8 @@ type YooKassaConfig struct {
 	SecretKey       string
 	ReturnURL       string
 	ReceiptsEnabled bool
+	TaxSystemCode   int
+	VATCode         int
 	PublicBaseURL   string
 	HTTPTimeout     time.Duration
 	PollInterval    time.Duration
@@ -165,6 +168,7 @@ func Load(lookup LookupEnv) (Config, error) {
 			return Config{}, errors.New("COURIER_DELIVERY_FEE_KOPECKS must be a non-negative integer")
 		}
 	}
+	pickupAddress := strings.TrimSpace(lookup("PICKUP_ADDRESS"))
 
 	bitrixConfig, err := loadBitrixConfig(lookup)
 	if err != nil {
@@ -190,6 +194,7 @@ func Load(lookup LookupEnv) (Config, error) {
 		MaxUploadSize: maxUploadSize,
 		RentalHoldTTL: rentalHoldTTL,
 		CourierFee:    courierFee,
+		PickupAddress: pickupAddress,
 		Bitrix:        bitrixConfig,
 		YooKassa:      yooKassaConfig,
 		Demo:          demoConfig,
@@ -432,12 +437,32 @@ func loadYooKassaConfig(lookup LookupEnv) (YooKassaConfig, error) {
 		}
 	}
 
+	taxSystemCode := 2 // Default: УСН Доходы
+	if value := lookup("YOOKASSA_TAX_SYSTEM_CODE"); value != "" {
+		code, err := strconv.Atoi(value)
+		if err != nil || code < 1 || code > 6 {
+			return YooKassaConfig{}, errors.New("YOOKASSA_TAX_SYSTEM_CODE must be between 1 and 6")
+		}
+		taxSystemCode = code
+	}
+
+	vatCode := 1 // Default: Без НДС (1)
+	if value := lookup("YOOKASSA_VAT_CODE"); value != "" {
+		code, err := strconv.Atoi(value)
+		if err != nil || code < 1 || code > 6 {
+			return YooKassaConfig{}, errors.New("YOOKASSA_VAT_CODE must be between 1 and 6")
+		}
+		vatCode = code
+	}
+
 	settings := YooKassaConfig{
 		Enabled:         enabled,
 		ShopID:          strings.TrimSpace(lookup("YOOKASSA_SHOP_ID")),
 		SecretKey:       lookup("YOOKASSA_SECRET_KEY"),
 		ReturnURL:       strings.TrimSpace(lookup("YOOKASSA_RETURN_URL")),
 		ReceiptsEnabled: receiptsEnabled,
+		TaxSystemCode:   taxSystemCode,
+		VATCode:         vatCode,
 		PublicBaseURL:   strings.TrimRight(strings.TrimSpace(lookup("PUBLIC_BASE_URL")), "/"),
 		HTTPTimeout:     httpTimeout,
 		PollInterval:    pollInterval,
