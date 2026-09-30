@@ -52,6 +52,13 @@ func (service fakeDocumentService) GetDocumentContent(
 	return service.get(ctx, clientID, documentID)
 }
 
+func (service fakeDocumentService) GetDocumentContentByID(
+	ctx context.Context,
+	documentID string,
+) (verification.Document, io.ReadCloser, error) {
+	return service.get(ctx, "", documentID)
+}
+
 func (service fakeDocumentService) DeleteDocument(
 	ctx context.Context,
 	clientID string,
@@ -365,4 +372,35 @@ func serveDocumentRequest(
 	response := httptest.NewRecorder()
 	mux.ServeHTTP(response, request)
 	return response
+}
+
+func TestViewDocumentPublicEndpoint(t *testing.T) {
+	fileBytes := []byte("fake-image-bytes")
+	service := fakeDocumentService{
+		get: func(_ context.Context, _ string, docID string) (verification.Document, io.ReadCloser, error) {
+			if docID != testDocumentID {
+				return verification.Document{}, nil, verification.ErrDocumentNotFound
+			}
+			return verification.Document{
+				ID:       testDocumentID,
+				MIMEType: "image/jpeg",
+			}, io.NopCloser(bytes.NewReader(fileBytes)), nil
+		},
+	}
+
+	rec := serveDocumentRequest(service, http.MethodGet, "/api/v1/verification/documents/"+testDocumentID+"/view", nil, "", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", rec.Code)
+	}
+	if rec.Header().Get("Content-Type") != "image/jpeg" {
+		t.Errorf("expected Content-Type image/jpeg, got %s", rec.Header().Get("Content-Type"))
+	}
+	if rec.Body.String() != string(fileBytes) {
+		t.Errorf("expected file bytes %q, got %q", fileBytes, rec.Body.Bytes())
+	}
+
+	rec = serveDocumentRequest(service, http.MethodGet, "/api/v1/verification/documents/50000000-0000-4000-8000-000000000099/view", nil, "", "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 Not Found, got %d", rec.Code)
+	}
 }

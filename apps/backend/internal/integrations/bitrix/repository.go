@@ -208,6 +208,45 @@ func (repository *PostgresRepository) SaveContactID(
 	return nil
 }
 
+func (repository *PostgresRepository) FindClientIDByBitrixContact(
+	ctx context.Context,
+	contactID string,
+	phone string,
+) (string, error) {
+	contactID = strings.TrimSpace(contactID)
+	phone = strings.TrimSpace(phone)
+
+	var clientID string
+	err := repository.database.QueryRow(
+		ctx,
+		`SELECT id::text
+		 FROM clients
+		 WHERE ($1 <> '' AND bitrix_contact_id = $1)
+		    OR ($2 <> '' AND phone = $2)
+		 ORDER BY CASE WHEN bitrix_contact_id = $1 THEN 0 ELSE 1 END
+		 LIMIT 1`,
+		contactID,
+		phone,
+	).Scan(&clientID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("find client by Bitrix contact: %w", err)
+	}
+
+	if contactID != "" && clientID != "" {
+		_, _ = repository.database.Exec(
+			ctx,
+			`UPDATE clients SET bitrix_contact_id = $2 WHERE id = $1::uuid AND bitrix_contact_id IS NULL`,
+			clientID,
+			contactID,
+		)
+	}
+
+	return clientID, nil
+}
+
 func (repository *PostgresRepository) GetRentalSyncData(
 	ctx context.Context,
 	rentalID string,

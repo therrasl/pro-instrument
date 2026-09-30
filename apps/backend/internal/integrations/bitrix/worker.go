@@ -1,6 +1,7 @@
 package bitrix
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"github.com/pro-instrument/pro-instrument/apps/backend/internal/config"
 	"github.com/pro-instrument/pro-instrument/apps/backend/internal/payments"
 	"github.com/pro-instrument/pro-instrument/apps/backend/internal/rentals"
+	"github.com/pro-instrument/pro-instrument/apps/backend/internal/verification"
 )
 
 const workerLease = 5 * time.Minute
@@ -41,6 +43,7 @@ type WorkerRepository interface {
 	FailOutbox(context.Context, string, int, string) error
 	GetClientSyncData(context.Context, string) (ClientSyncData, error)
 	SaveContactID(context.Context, string, string) error
+	FindClientIDByBitrixContact(context.Context, string, string) (string, error)
 	GetRentalSyncData(context.Context, string) (RentalSyncData, error)
 	SaveDealID(context.Context, string, string) error
 	ClaimInbound(context.Context, time.Time, time.Time, int) (InboundEvent, bool, error)
@@ -58,14 +61,26 @@ type DepositRefunder interface {
 	RefundDeposit(context.Context, string, *int64, string) (payments.RefundResult, error)
 }
 
+type VerificationReviewer interface {
+	Approve(context.Context, string, string) (verification.Review, error)
+	Reject(context.Context, string, string, string) (verification.Review, error)
+}
+
+type VerificationPushNotifier interface {
+	NotifyVerificationApproved(context.Context, string) error
+	NotifyVerificationRejected(context.Context, string, string) error
+}
+
 type Worker struct {
-	repository      WorkerRepository
-	client          Client
-	statusUpdater   RentalStatusUpdater
-	depositRefunder DepositRefunder
-	settings        config.BitrixConfig
-	logger          *log.Logger
-	now             func() time.Time
+	repository               WorkerRepository
+	client                   Client
+	statusUpdater            RentalStatusUpdater
+	depositRefunder          DepositRefunder
+	verificationReviewer     VerificationReviewer
+	verificationPushNotifier VerificationPushNotifier
+	settings                 config.BitrixConfig
+	logger                   *log.Logger
+	now                      func() time.Time
 }
 
 func NewWorker(
@@ -87,6 +102,16 @@ func NewWorker(
 
 func (worker *Worker) SetDepositRefunder(refunder DepositRefunder) *Worker {
 	worker.depositRefunder = refunder
+	return worker
+}
+
+func (worker *Worker) SetVerificationReviewer(reviewer VerificationReviewer) *Worker {
+	worker.verificationReviewer = reviewer
+	return worker
+}
+
+func (worker *Worker) SetVerificationPushNotifier(notifier VerificationPushNotifier) *Worker {
+	worker.verificationPushNotifier = notifier
 	return worker
 }
 
@@ -296,8 +321,15 @@ func (worker *Worker) processInbound(
 	event InboundEvent,
 	now time.Time,
 ) error {
+	if worker.isContactInbound(event) {
+		return worker.processInboundContact(ctx, event, now)
+	}
+
 	deal, err := worker.client.GetDeal(ctx, event.BitrixDealID)
 	if err != nil {
+		if contact, cErr := worker.client.GetContact(ctx, event.BitrixDealID); cErr == nil && contact.ID != "" {
+			return worker.processInboundContact(ctx, event, now)
+		}
 		return worker.handleInboundError(ctx, event, now, classifyClientError(err))
 	}
 	categoryStr := strconv.Itoa(worker.settings.CategoryID)
@@ -339,6 +371,71 @@ func (worker *Worker) processInbound(
 	}
 
 	return worker.repository.CompleteInbound(ctx, event.ID, rentalID, now)
+}
+
+func (worker *Worker) isContactInbound(event InboundEvent) bool {
+	upper := bytes.ToUpper(event.RawPayload)
+	return bytes.Contains(upper, []byte("ONCRMCONTACT")) ||
+		bytes.Contains(upper, []byte("\"CONTACT_ID\"")) ||
+		bytes.Contains(upper, []byte("\"ENTITY_TYPE\":\"CONTACT\"")) ||
+		bytes.Contains(upper, []byte("\"CONTACT\""))
+}
+
+func (worker *Worker) processInboundContact(
+	ctx context.Context,
+	event InboundEvent,
+	now time.Time,
+) error {
+	contact, err := worker.client.GetContact(ctx, event.BitrixDealID)
+	if err != nil {
+		return worker.handleInboundError(ctx, event, now, classifyClientError(err))
+	}
+
+	if contact.VerifiedStatus != "approved" && contact.VerifiedStatus != "rejected" {
+		return worker.repository.CompleteInbound(ctx, event.ID, "", now)
+	}
+
+	clientID, err := worker.repository.FindClientIDByBitrixContact(ctx, contact.ID, contact.Phone)
+	if err != nil {
+		return worker.handleInboundError(ctx, event, now, err)
+	}
+	if clientID == "" {
+		return worker.repository.CompleteInbound(ctx, event.ID, "", now)
+	}
+
+	if contact.VerifiedStatus == "approved" {
+		if worker.verificationReviewer != nil {
+			_, err = worker.verificationReviewer.Approve(ctx, clientID, "bitrix_manager")
+			if err != nil && !errors.Is(err, verification.ErrReviewNotAllowed) {
+				return worker.handleInboundError(ctx, event, now, err)
+			}
+		}
+		if worker.verificationPushNotifier != nil {
+			_ = worker.verificationPushNotifier.NotifyVerificationApproved(ctx, clientID)
+		}
+		if worker.logger != nil {
+			worker.logger.Printf("Bitrix contact %s (client %s) approved by manager", contact.ID, clientID)
+		}
+	} else if contact.VerifiedStatus == "rejected" {
+		reason := contact.Comments
+		if strings.TrimSpace(reason) == "" {
+			reason = "Фотографии документов не соответствуют требованиям к качеству"
+		}
+		if worker.verificationReviewer != nil {
+			_, err = worker.verificationReviewer.Reject(ctx, clientID, "bitrix_manager", reason)
+			if err != nil && !errors.Is(err, verification.ErrReviewNotAllowed) {
+				return worker.handleInboundError(ctx, event, now, err)
+			}
+		}
+		if worker.verificationPushNotifier != nil {
+			_ = worker.verificationPushNotifier.NotifyVerificationRejected(ctx, clientID, reason)
+		}
+		if worker.logger != nil {
+			worker.logger.Printf("Bitrix contact %s (client %s) rejected by manager: %s", contact.ID, clientID, reason)
+		}
+	}
+
+	return worker.repository.CompleteInbound(ctx, event.ID, clientID, now)
 }
 
 func (worker *Worker) importDealFromBitrix(

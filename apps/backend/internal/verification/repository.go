@@ -209,6 +209,44 @@ func (repository *PostgresRepository) GetDocument(
 	return document, nil
 }
 
+func (repository *PostgresRepository) GetDocumentByID(
+	ctx context.Context,
+	documentID string,
+) (Document, error) {
+	var document Document
+	err := repository.database.QueryRow(
+		ctx,
+		`SELECT
+			id::text,
+			client_id::text,
+			document_type,
+			storage_key,
+			mime_type,
+			size_bytes,
+			created_at,
+			updated_at
+		 FROM client_documents
+		 WHERE id = $1::uuid`,
+		documentID,
+	).Scan(
+		&document.ID,
+		&document.ClientID,
+		&document.DocumentType,
+		&document.StorageKey,
+		&document.MIMEType,
+		&document.SizeBytes,
+		&document.CreatedAt,
+		&document.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Document{}, ErrDocumentNotFound
+	}
+	if err != nil {
+		return Document{}, fmt.Errorf("get document by id: %w", err)
+	}
+	return document, nil
+}
+
 func (repository *PostgresRepository) DeleteDocument(
 	ctx context.Context,
 	clientID string,
@@ -407,11 +445,17 @@ func (repository *PostgresRepository) CreateReview(
 	if err != nil {
 		return Review{}, fmt.Errorf("lock client verification: %w", err)
 	}
-	if status != "pending_verification" {
+	if status == "verified" && decision == "approved" {
+		return Review{ClientID: clientID, ReviewerID: reviewerID, Decision: decision, CreatedAt: createdAt}, nil
+	}
+	if status == "verification_rejected" && decision == "rejected" {
+		return Review{ClientID: clientID, ReviewerID: reviewerID, Decision: decision, Reason: reason, CreatedAt: createdAt}, nil
+	}
+	if status != "pending_verification" && status != "documents_uploaded" && status != "phone_verified" && status != "profile_completed" && status != "verification_rejected" {
 		return Review{}, ErrReviewNotAllowed
 	}
 
-	if decision == "approved" {
+	if decision == "approved" && reviewerID != "bitrix_manager" {
 		var documentCount int
 		if err := transaction.QueryRow(
 			ctx,

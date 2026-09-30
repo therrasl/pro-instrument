@@ -24,6 +24,8 @@ type Client interface {
 	GetDealFull(context.Context, string) (DealFull, error)
 	GetContact(context.Context, string) (ContactDetails, error)
 	AddDealComment(context.Context, string, string) error
+	AddContactComment(context.Context, string, string) error
+	AddContactActivity(context.Context, string, string, string, time.Time) error
 }
 
 type ContactInput struct {
@@ -32,9 +34,11 @@ type ContactInput struct {
 }
 
 type ContactDetails struct {
-	ID       string
-	FullName string
-	Phone    string
+	ID             string
+	FullName       string
+	Phone          string
+	Comments       string
+	VerifiedStatus string
 }
 
 type DealState struct {

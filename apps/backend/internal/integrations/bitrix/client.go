@@ -219,6 +219,8 @@ func (client *HTTPClient) GetContact(
 		Phones   []struct {
 			Value string `json:"VALUE"`
 		} `json:"PHONE"`
+		Comments string          `json:"COMMENTS"`
+		Verified json.RawMessage `json:"UF_CRM_1786619870585"`
 	}
 	if err := json.Unmarshal(result, &raw); err != nil {
 		return ContactDetails{}, fmt.Errorf("decode Bitrix contact: %w", err)
@@ -232,10 +234,24 @@ func (client *HTTPClient) GetContact(
 	if len(raw.Phones) > 0 {
 		phone = raw.Phones[0].Value
 	}
+
+	verifiedStatus := ""
+	if len(raw.Verified) > 0 {
+		verifiedRaw := strings.Trim(string(raw.Verified), "\" ")
+		switch verifiedRaw {
+		case "300", "Да", "да", "true", "Y", "1":
+			verifiedStatus = "approved"
+		case "302", "Нет", "нет", "false", "N", "0":
+			verifiedStatus = "rejected"
+		}
+	}
+
 	return ContactDetails{
-		ID:       id,
-		FullName: fullName,
-		Phone:    phone,
+		ID:             id,
+		FullName:       fullName,
+		Phone:          phone,
+		Comments:       strings.TrimSpace(raw.Comments),
+		VerifiedStatus: verifiedStatus,
 	}, nil
 }
 
@@ -256,6 +272,47 @@ func (client *HTTPClient) AddDealComment(
 			"ENTITY_TYPE": "deal",
 			"COMMENT":     comment,
 		},
+	})
+	return err
+}
+
+func (client *HTTPClient) AddContactComment(
+	ctx context.Context,
+	contactID string,
+	comment string,
+) error {
+	if strings.TrimSpace(contactID) == "" {
+		return errors.New("empty contact id")
+	}
+	if strings.TrimSpace(comment) == "" {
+		return nil
+	}
+	_, err := client.call(ctx, "crm.timeline.comment.add", map[string]any{
+		"fields": map[string]any{
+			"ENTITY_ID":   contactID,
+			"ENTITY_TYPE": "contact",
+			"COMMENT":     comment,
+		},
+	})
+	return err
+}
+
+func (client *HTTPClient) AddContactActivity(
+	ctx context.Context,
+	contactID string,
+	title string,
+	description string,
+	deadline time.Time,
+) error {
+	if strings.TrimSpace(contactID) == "" {
+		return errors.New("empty contact id")
+	}
+	_, err := client.call(ctx, "crm.activity.todo.add", map[string]any{
+		"ownerTypeId": 3,
+		"ownerId":     contactID,
+		"title":       title,
+		"description": description,
+		"deadline":    deadline.Format("2006-01-02T15:04:05-07:00"),
 	})
 	return err
 }

@@ -143,10 +143,6 @@ func run(logger *log.Logger) error {
 		logger,
 	).SetFiscalParameters(settings.YooKassa.TaxSystemCode, settings.YooKassa.VATCode)
 	rentalsService.SetExtensionPaymentCreator(paymentsService)
-	if settings.Bitrix.Enabled {
-		bitrixClient := bitrix.NewHTTPClient(settings.Bitrix.BaseURL, settings.Bitrix.HTTPTimeout)
-		rentalsService.SetInspectionPhotoNotifier(bitrix.NewDealPhotoNotifier(bitrixClient, settings.YooKassa.PublicBaseURL))
-	}
 	paymentsHandler := payments.NewHandler(paymentsService, logger)
 	yooKassaWebhookHandler := payments.NewWebhookHandler(paymentsService, logger)
 	pushRepository := push.NewPostgresRepository(pool)
@@ -155,6 +151,7 @@ func run(logger *log.Logger) error {
 	pushClient := push.NewExpoClient(push.DefaultExpoPushURL, &http.Client{
 		Timeout: 10 * time.Second,
 	})
+	verificationPushNotifier := push.NewVerificationPushNotifier(pushRepository, pushClient)
 	pushDispatcher := push.NewDispatcher(
 		pushRepository,
 		pushClient,
@@ -163,6 +160,23 @@ func run(logger *log.Logger) error {
 		5,
 		logger,
 	)
+
+	if settings.Bitrix.Enabled {
+		bitrixClient := bitrix.NewHTTPClient(settings.Bitrix.BaseURL, settings.Bitrix.HTTPTimeout)
+		rentalsService.SetInspectionPhotoNotifier(bitrix.NewDealPhotoNotifier(bitrixClient, settings.YooKassa.PublicBaseURL))
+		verificationService.SetNotifier(bitrix.NewVerificationNotifier(bitrixClient, bitrixRepository, settings.YooKassa.PublicBaseURL))
+
+		verificationWebhookHandler := bitrix.NewVerificationWebhookHandler(
+			bitrixRepository,
+			verificationService,
+			verificationPushNotifier,
+			settings.Bitrix.Enabled,
+			settings.Bitrix.WebhookSecret,
+			logger,
+		)
+		bitrixEventsHandler.SetVerificationHandler(verificationWebhookHandler)
+	}
+
 	if settings.YooKassa.Enabled {
 		logger.Printf(
 			"YooKassa webhook endpoint: %s/api/v1/integrations/yookassa/webhook",

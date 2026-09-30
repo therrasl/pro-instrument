@@ -217,6 +217,11 @@ export default function DocumentsScreen() {
     try {
       await submitDocuments(token);
       await refreshClient();
+      Alert.alert(
+        'Документы отправлены',
+        'Менеджер проверит ваши документы в CRM Битрикс24. Мы пришлем Push-уведомление с результатом проверки.',
+        [{ text: 'Понятно' }],
+      );
     } catch (requestError) {
       setError(
         requestError instanceof Error
@@ -323,6 +328,25 @@ export default function DocumentsScreen() {
                 : 'Загрузите исправленные изображения.'
             }
           />
+        ) : null}
+        {pending ? (
+          <View style={styles.pendingCard}>
+            <Ionicons color={colors.warning} name="time-outline" size={24} />
+            <View style={styles.pendingCardCopy}>
+              <Text style={styles.pendingCardTitle}>Проверка документов менеджером</Text>
+              <Text style={styles.pendingCardText}>
+                Менеджер проверяет документы в CRM Битрикс24. Обычно проверка занимает от 15 минут до 2 часов в рабочее время. Как только проверка завершится, вам придет Push-уведомление.
+              </Text>
+              <View style={{ marginTop: spacing.sm }}>
+                <Button
+                  label="Обновить статус"
+                  loading={refreshing}
+                  onPress={() => void refresh()}
+                  variant="secondary"
+                />
+              </View>
+            </View>
+          </View>
         ) : null}
         {error ? <ErrorNotice message={error} /> : null}
 
@@ -540,6 +564,30 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
   overallStatusMessage: { color: colors.ink, fontSize: 14, lineHeight: 20 },
+  pendingCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.md,
+    padding: spacing.md,
+    borderRadius: radius.md,
+    backgroundColor: '#fffbeb',
+    borderWidth: 1,
+    borderColor: '#fef3c7',
+  },
+  pendingCardCopy: {
+    flex: 1,
+    gap: spacing.xs,
+  },
+  pendingCardTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#92400e',
+  },
+  pendingCardText: {
+    fontSize: 13,
+    lineHeight: 18,
+    color: '#78350f',
+  },
   sectionHeader: {
     minHeight: 28,
     flexDirection: 'row',

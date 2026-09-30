@@ -86,6 +86,14 @@ func (repository *fakeWorkerRepository) SaveContactID(
 	return nil
 }
 
+func (repository *fakeWorkerRepository) FindClientIDByBitrixContact(
+	_ context.Context,
+	contactID string,
+	phone string,
+) (string, error) {
+	return "test-client-id", nil
+}
+
 func (repository *fakeWorkerRepository) GetRentalSyncData(
 	context.Context,
 	string,

@@ -24,14 +24,20 @@ type Repository interface {
 	CreateDocument(context.Context, Document) (Document, error)
 	ListDocuments(context.Context, string) ([]Document, error)
 	GetDocument(context.Context, string, string) (Document, error)
+	GetDocumentByID(context.Context, string) (Document, error)
 	DeleteDocument(context.Context, string, string) (Document, error)
 	SubmitDocuments(context.Context, string) error
 	CreateReview(context.Context, string, string, string, *string, time.Time) (Review, error)
 }
 
+type DocumentNotifier interface {
+	NotifyDocumentsSubmitted(context.Context, string, []Document) error
+}
+
 type Service struct {
 	repository  Repository
 	storage     FileStorage
+	notifier    DocumentNotifier
 	maximumSize int64
 	now         func() time.Time
 	randomKey   func() (string, error)
@@ -45,6 +51,11 @@ func NewService(repository Repository, storage FileStorage, maximumSize int64) *
 		now:         time.Now,
 		randomKey:   generateStorageKey,
 	}
+}
+
+func (service *Service) SetNotifier(notifier DocumentNotifier) *Service {
+	service.notifier = notifier
+	return service
 }
 
 func (service *Service) UploadDocument(
@@ -112,6 +123,21 @@ func (service *Service) GetDocumentContent(
 	return document, content, nil
 }
 
+func (service *Service) GetDocumentContentByID(
+	ctx context.Context,
+	documentID string,
+) (Document, io.ReadCloser, error) {
+	document, err := service.repository.GetDocumentByID(ctx, documentID)
+	if err != nil {
+		return Document{}, nil, err
+	}
+	content, err := service.storage.Open(ctx, document.StorageKey)
+	if err != nil {
+		return Document{}, nil, err
+	}
+	return document, content, nil
+}
+
 func (service *Service) DeleteDocument(ctx context.Context, clientID string, documentID string) error {
 	document, err := service.repository.DeleteDocument(ctx, clientID, documentID)
 	if err != nil {
@@ -124,7 +150,18 @@ func (service *Service) DeleteDocument(ctx context.Context, clientID string, doc
 }
 
 func (service *Service) SubmitDocuments(ctx context.Context, clientID string) error {
-	return service.repository.SubmitDocuments(ctx, clientID)
+	if err := service.repository.SubmitDocuments(ctx, clientID); err != nil {
+		return err
+	}
+	if service.notifier != nil {
+		documents, _ := service.repository.ListDocuments(ctx, clientID)
+		go func() {
+			asyncCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			_ = service.notifier.NotifyDocumentsSubmitted(asyncCtx, clientID, documents)
+		}()
+	}
+	return nil
 }
 
 func (service *Service) Approve(

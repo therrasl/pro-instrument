@@ -19,6 +19,7 @@ type DocumentService interface {
 	UploadDocument(context.Context, string, string, io.Reader) (Document, error)
 	ListDocuments(context.Context, string) ([]Document, error)
 	GetDocumentContent(context.Context, string, string) (Document, io.ReadCloser, error)
+	GetDocumentContentByID(context.Context, string) (Document, io.ReadCloser, error)
 	DeleteDocument(context.Context, string, string) error
 	SubmitDocuments(context.Context, string) error
 }
@@ -43,6 +44,7 @@ func (handler *Handler) Register(
 		"GET /api/v1/me/documents/{id}/content",
 		authenticate(http.HandlerFunc(handler.getDocumentContent)),
 	)
+	mux.HandleFunc("GET /api/v1/verification/documents/{id}/view", handler.viewDocument)
 	mux.Handle(
 		"DELETE /api/v1/me/documents/{id}",
 		authenticate(http.HandlerFunc(handler.deleteDocument)),
@@ -191,6 +193,37 @@ func (handler *Handler) deleteDocument(response http.ResponseWriter, request *ht
 	}
 
 	response.WriteHeader(http.StatusNoContent)
+}
+
+func (handler *Handler) viewDocument(response http.ResponseWriter, request *http.Request) {
+	documentID := request.PathValue("id")
+	if !validUUID(documentID) {
+		writeError(response, http.StatusBadRequest, "invalid document id")
+		return
+	}
+
+	document, content, err := handler.service.GetDocumentContentByID(
+		request.Context(),
+		documentID,
+	)
+	if errors.Is(err, ErrDocumentNotFound) {
+		writeError(response, http.StatusNotFound, "document not found")
+		return
+	}
+	if err != nil {
+		handler.internalError(response, err)
+		return
+	}
+	defer func() {
+		_ = content.Close()
+	}()
+
+	response.Header().Set("Content-Type", document.MIMEType)
+	response.Header().Set("Content-Disposition", "inline")
+	response.Header().Set("Cache-Control", "private, max-age=3600")
+	if _, err := io.Copy(response, content); err != nil {
+		handler.logger.Printf("stream document view failed: %v", err)
+	}
 }
 
 func (handler *Handler) submitDocuments(response http.ResponseWriter, request *http.Request) {

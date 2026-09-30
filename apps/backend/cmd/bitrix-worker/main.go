@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -14,7 +15,9 @@ import (
 	"github.com/pro-instrument/pro-instrument/apps/backend/internal/integrations/bitrix"
 	"github.com/pro-instrument/pro-instrument/apps/backend/internal/integrations/yookassa"
 	"github.com/pro-instrument/pro-instrument/apps/backend/internal/payments"
+	"github.com/pro-instrument/pro-instrument/apps/backend/internal/push"
 	"github.com/pro-instrument/pro-instrument/apps/backend/internal/rentals"
+	"github.com/pro-instrument/pro-instrument/apps/backend/internal/verification"
 )
 
 func main() {
@@ -57,6 +60,18 @@ func run(logger *log.Logger) error {
 	)
 	client := bitrix.NewHTTPClient(bitrixSettings.BaseURL, bitrixSettings.HTTPTimeout)
 	worker := bitrix.NewWorker(repository, client, statusService, bitrixSettings, logger)
+
+	pushRepo := push.NewPostgresRepository(pool)
+	pushClient := push.NewExpoClient(push.DefaultExpoPushURL, &http.Client{Timeout: 10 * time.Second})
+	worker.SetVerificationPushNotifier(push.NewVerificationPushNotifier(pushRepo, pushClient))
+
+	storagePath := os.Getenv("STORAGE_PATH")
+	if storagePath == "" {
+		storagePath = "./storage"
+	}
+	fileStorage, _ := verification.NewLocalFileStorage(storagePath)
+	verificationService := verification.NewService(verification.NewPostgresRepository(pool), fileStorage, 10*1024*1024)
+	worker.SetVerificationReviewer(verificationService)
 
 	yooSettings, err := config.LoadYooKassa(os.Getenv)
 	if err == nil && yooSettings.Enabled {

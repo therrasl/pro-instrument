@@ -96,6 +96,33 @@ func (repository *PostgresRepository) DeleteToken(
 	return nil
 }
 
+func (repository *PostgresRepository) GetActiveTokensForClient(
+	ctx context.Context,
+	clientID string,
+) ([]string, error) {
+	rows, err := repository.database.Query(
+		ctx,
+		`SELECT token
+		 FROM client_push_tokens
+		 WHERE client_id = $1::uuid AND enabled = TRUE`,
+		clientID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query active push tokens: %w", err)
+	}
+	defer rows.Close()
+
+	var tokens []string
+	for rows.Next() {
+		var token string
+		if err := rows.Scan(&token); err != nil {
+			return nil, fmt.Errorf("scan active push token: %w", err)
+		}
+		tokens = append(tokens, token)
+	}
+	return tokens, rows.Err()
+}
+
 func (repository *PostgresRepository) ClaimDelivery(
 	ctx context.Context,
 	now time.Time,

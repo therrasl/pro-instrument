@@ -34,6 +34,13 @@ func (repository fakeRepository) GetDocument(
 	return repository.getDocument(ctx, clientID, documentID)
 }
 
+func (repository fakeRepository) GetDocumentByID(
+	ctx context.Context,
+	documentID string,
+) (Document, error) {
+	return repository.getDocument(ctx, "", documentID)
+}
+
 func (repository fakeRepository) DeleteDocument(
 	ctx context.Context,
 	clientID string,

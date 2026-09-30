@@ -35,9 +35,10 @@ type EventRepository interface {
 type EventsHandler struct {
 	repository EventRepository
 	enabled    bool
-	secret     string
-	logger     *log.Logger
-	now        func() time.Time
+	secret              string
+	logger              *log.Logger
+	now                 func() time.Time
+	verificationHandler *VerificationWebhookHandler
 }
 
 func NewEventsHandler(
@@ -55,8 +56,16 @@ func NewEventsHandler(
 	}
 }
 
+func (handler *EventsHandler) SetVerificationHandler(v *VerificationWebhookHandler) *EventsHandler {
+	handler.verificationHandler = v
+	return handler
+}
+
 func (handler *EventsHandler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/integrations/bitrix/events", handler.receive)
+	if handler.verificationHandler != nil {
+		handler.verificationHandler.Register(mux)
+	}
 }
 
 func (handler *EventsHandler) receive(response http.ResponseWriter, request *http.Request) {
@@ -140,8 +149,10 @@ func decodeInboundForm(
 ) (string, string, json.RawMessage, error) {
 	dealID := firstNonEmpty(
 		values.Get("deal_id"),
+		values.Get("contact_id"),
 		values.Get("data[FIELDS][ID]"),
 		values.Get("data[fields][ID]"),
+		values.Get("data[FIELDS][id]"),
 	)
 	eventID := values.Get("event_id")
 
@@ -164,6 +175,9 @@ func decodeInboundJSON(
 		return "", "", nil, err
 	}
 	dealID := stringField(value, "deal_id")
+	if dealID == "" {
+		dealID = stringField(value, "contact_id")
+	}
 	if dealID == "" {
 		dealID = nestedStringField(value, "data", "FIELDS", "ID")
 	}
