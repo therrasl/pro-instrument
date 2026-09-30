@@ -13,6 +13,13 @@ type Client struct {
 	FullName                    *string    `json:"full_name"`
 	BirthDate                   *string    `json:"birth_date"`
 	Email                       *string    `json:"email"`
+	ClientType                  string     `json:"client_type"`
+	CompanyName                 *string    `json:"company_name"`
+	INN                         *string    `json:"inn"`
+	KPP                         *string    `json:"kpp"`
+	OGRN                        *string    `json:"ogrn"`
+	LegalAddress                *string    `json:"legal_address"`
+	CompanyContact              *string    `json:"company_contact"`
 	Status                      string     `json:"status"`
 	VerificationRejectionReason *string    `json:"verification_rejection_reason"`
 	CreatedAt                   time.Time  `json:"created_at"`
@@ -26,9 +33,16 @@ type Session struct {
 }
 
 type ProfilePatch struct {
-	FullName  *string
-	BirthDate *string
-	Email     *string
+	FullName       *string
+	BirthDate      *string
+	Email          *string
+	ClientType     *string
+	CompanyName    *string
+	INN            *string
+	KPP            *string
+	OGRN           *string
+	LegalAddress   *string
+	CompanyContact *string
 }
 
 type ConsentInput struct {

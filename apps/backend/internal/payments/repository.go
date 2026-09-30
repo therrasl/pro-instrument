@@ -305,6 +305,181 @@ func (repository *PostgresRepository) PreparePayment(
 	return payment, data, true, nil
 }
 
+func (repository *PostgresRepository) PrepareExtensionPayment(
+	ctx context.Context,
+	clientID string,
+	rentalID string,
+	extensionID string,
+	amount int64,
+	receiptsEnabled bool,
+	now time.Time,
+) (Payment, CreateData, error) {
+	transaction, err := repository.database.Begin(ctx)
+	if err != nil {
+		return Payment{}, CreateData{}, fmt.Errorf("begin extension payment: %w", err)
+	}
+	defer func() {
+		_ = transaction.Rollback(ctx)
+	}()
+
+	var clientPhone string
+	var clientEmail *string
+	var verificationStatus string
+	var rentalStatus string
+	err = transaction.QueryRow(
+		ctx,
+		`SELECT
+			c.phone,
+			c.email,
+			c.status,
+			rr.status
+		 FROM rental_requests AS rr
+		 JOIN clients AS c ON c.id = rr.client_id
+		 WHERE rr.id = $1::uuid AND rr.client_id = $2::uuid`,
+		rentalID,
+		clientID,
+	).Scan(
+		&clientPhone,
+		&clientEmail,
+		&verificationStatus,
+		&rentalStatus,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Payment{}, CreateData{}, ErrRentalNotFound
+	}
+	if err != nil {
+		return Payment{}, CreateData{}, fmt.Errorf("lookup client for extension payment: %w", err)
+	}
+	if verificationStatus != "verified" {
+		return Payment{}, CreateData{}, ErrClientNotVerified
+	}
+
+	idempotencyKey := fmt.Sprintf("ext:%s:%d", extensionID, amount)
+
+	existing, err := scanPayment(transaction.QueryRow(
+		ctx,
+		paymentSelect+` WHERE idempotency_key = $1`,
+		idempotencyKey,
+	))
+	if err == nil {
+		if err := transaction.Commit(ctx); err != nil {
+			return Payment{}, CreateData{}, err
+		}
+		data := CreateData{
+			ClientPhone: clientPhone,
+			ClientEmail: stringValue(clientEmail),
+			ReceiptItems: []yookassa.ReceiptItem{
+				{
+					Description:    "Продление аренды",
+					Quantity:       "1.00",
+					Amount:         yookassa.Money{Value: formatKopecks(amount), Currency: "RUB"},
+					PaymentSubject: "service",
+					PaymentMode:    "full_payment",
+				},
+			},
+		}
+		return existing, data, nil
+	}
+
+	payment, err := scanPayment(transaction.QueryRow(
+		ctx,
+		`INSERT INTO payments (
+			rental_request_id,
+			rental_amount,
+			deposit_amount,
+			delivery_amount,
+			total_amount,
+			currency,
+			status,
+			idempotency_key,
+			payment_type,
+			extension_id,
+			provider_payload,
+			created_at,
+			updated_at
+		)
+		VALUES ($1::uuid, $2, 0, 0, $2, 'RUB', 'creating', $3, 'extension', $4::uuid, '{}'::jsonb, $5, $5)
+		RETURNING
+			id::text,
+			rental_request_id::text,
+			provider_payment_id,
+			idempotency_key,
+			rental_amount,
+			deposit_amount,
+			delivery_amount,
+			total_amount,
+			currency,
+			status,
+			confirmation_url,
+			provider_payload,
+			created_at,
+			updated_at,
+			succeeded_at,
+			cancelled_at`,
+		rentalID,
+		amount,
+		idempotencyKey,
+		extensionID,
+		now,
+	))
+	if err != nil {
+		return Payment{}, CreateData{}, fmt.Errorf("insert extension payment: %w", err)
+	}
+
+	receiptItems := []yookassa.ReceiptItem{
+		{
+			Description:    "Продление аренды",
+			Quantity:       "1.00",
+			Amount:         yookassa.Money{Value: formatKopecks(amount), Currency: "RUB"},
+			PaymentSubject: "service",
+			PaymentMode:    "full_payment",
+		},
+	}
+	itemsJSON, _ := json.Marshal(receiptItems)
+	receiptStatus := "disabled"
+	if receiptsEnabled {
+		receiptStatus = "pending"
+	}
+	if _, err := transaction.Exec(
+		ctx,
+		`INSERT INTO fiscal_receipts (
+			payment_id, status, items, created_at, updated_at
+		)
+		VALUES ($1::uuid, $2, $3::jsonb, $4, $4)`,
+		payment.ID,
+		receiptStatus,
+		itemsJSON,
+		now,
+	); err != nil {
+		return Payment{}, CreateData{}, fmt.Errorf("insert extension fiscal receipt: %w", err)
+	}
+
+	if _, err := transaction.Exec(
+		ctx,
+		`INSERT INTO payment_audit_logs (
+			payment_id, rental_request_id, action, actor_type, actor_id, details, created_at
+		)
+		VALUES ($1::uuid, $2::uuid, 'payment.created', 'client', $3, jsonb_build_object('total_amount', $4::bigint, 'type', 'extension'::text), $5)`,
+		payment.ID,
+		rentalID,
+		clientID,
+		amount,
+		now,
+	); err != nil {
+		return Payment{}, CreateData{}, fmt.Errorf("audit extension payment: %w", err)
+	}
+
+	if err := transaction.Commit(ctx); err != nil {
+		return Payment{}, CreateData{}, fmt.Errorf("commit extension payment: %w", err)
+	}
+
+	return payment, CreateData{
+		ClientPhone:  clientPhone,
+		ClientEmail:  stringValue(clientEmail),
+		ReceiptItems: receiptItems,
+	}, nil
+}
+
 func (repository *PostgresRepository) SaveProviderPayment(
 	ctx context.Context,
 	paymentID string,
@@ -614,6 +789,8 @@ func (repository *PostgresRepository) CompleteSucceeded(
 	var rentalStatus string
 	var holdStatus string
 	var paymentExpiresAt time.Time
+	var paymentType string
+	var extensionID *string
 	err = transaction.QueryRow(
 		ctx,
 		`SELECT
@@ -622,7 +799,9 @@ func (repository *PostgresRepository) CompleteSucceeded(
 			p.status,
 			rr.status,
 			h.status,
-			rr.expires_at
+			rr.expires_at,
+			COALESCE(p.payment_type, 'initial'),
+			p.extension_id::text
 		 FROM payments AS p
 		 JOIN rental_requests AS rr ON rr.id = p.rental_request_id
 		 JOIN tool_holds AS h ON h.rental_request_id = rr.id
@@ -636,12 +815,162 @@ func (repository *PostgresRepository) CompleteSucceeded(
 		&rentalStatus,
 		&holdStatus,
 		&paymentExpiresAt,
+		&paymentType,
+		&extensionID,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrWebhookMismatch
 	}
 	if err != nil {
 		return fmt.Errorf("lock successful payment: %w", err)
+	}
+
+	if paymentType == "extension" {
+		if paymentStatus != StatusSucceeded && extensionID != nil {
+			if _, err := transaction.Exec(
+				ctx,
+				`UPDATE payments
+				 SET
+					status = 'succeeded',
+					provider_payload = $2::jsonb,
+					updated_at = $3,
+					succeeded_at = $3
+				 WHERE id = $1::uuid`,
+				paymentID,
+				provider.Raw,
+				now,
+			); err != nil {
+				return fmt.Errorf("mark extension payment succeeded: %w", err)
+			}
+
+			var newEndDate time.Time
+			var additionalDays int
+			var extAmount int64
+			err = transaction.QueryRow(
+				ctx,
+				`UPDATE rental_extensions
+				 SET status = 'paid', paid_at = $2, updated_at = $2
+				 WHERE id = $1::uuid
+				 RETURNING new_end_date, additional_days, amount`,
+				*extensionID,
+				now,
+			).Scan(&newEndDate, &additionalDays, &extAmount)
+			if err != nil {
+				return fmt.Errorf("update extension status: %w", err)
+			}
+
+			if _, err := transaction.Exec(
+				ctx,
+				`UPDATE rental_requests
+				 SET
+					end_date = $2,
+					rental_days = rental_days + $3,
+					rental_price = rental_price + $4,
+					total_amount = total_amount + $4,
+					updated_at = $5
+				 WHERE id = $1::uuid`,
+				rentalID,
+				newEndDate,
+				additionalDays,
+				extAmount,
+				now,
+			); err != nil {
+				return fmt.Errorf("extend rental request: %w", err)
+			}
+
+			if _, err := transaction.Exec(
+				ctx,
+				`UPDATE tool_holds
+				 SET
+					rental_period = daterange(lower(rental_period), $2::date, '[]'),
+					updated_at = $3
+				 WHERE rental_request_id = $1::uuid`,
+				rentalID,
+				newEndDate,
+				now,
+			); err != nil {
+				return fmt.Errorf("expand tool hold: %w", err)
+			}
+
+			if _, err := transaction.Exec(
+				ctx,
+				`INSERT INTO payment_audit_logs (
+					payment_id,
+					rental_request_id,
+					action,
+					actor_type,
+					actor_id,
+					details,
+					created_at
+				)
+				VALUES (
+					$1::uuid,
+					$2::uuid,
+					'rental.extended',
+					'provider',
+					$3,
+					jsonb_build_object(
+						'extension_id', $4::text,
+						'new_end_date', $5::text,
+						'additional_days', $6::int,
+						'amount', $7::bigint
+					),
+					$8
+				)`,
+				paymentID,
+				rentalID,
+				provider.ID,
+				*extensionID,
+				newEndDate.Format(time.DateOnly),
+				additionalDays,
+				extAmount,
+				now,
+			); err != nil {
+				return fmt.Errorf("audit rental extension: %w", err)
+			}
+
+			_, _ = transaction.Exec(
+				ctx,
+				`INSERT INTO integration_outbox (
+					aggregate_type,
+					aggregate_id,
+					event_type,
+					payload,
+					status,
+					created_at,
+					updated_at
+				)
+				VALUES ('rental', $1::uuid, 'bitrix.deal.update', '{}'::jsonb, 'pending', $2, $2)`,
+				rentalID,
+				now,
+			)
+		}
+
+		if _, err := transaction.Exec(
+			ctx,
+			`UPDATE payment_events
+			 SET status = 'processed', payment_id = $2::uuid, processed_at = $3
+			 WHERE id = $1::uuid`,
+			event.ID,
+			paymentID,
+			now,
+		); err != nil {
+			return fmt.Errorf("mark extension event processed: %w", err)
+		}
+
+		if _, err := transaction.Exec(
+			ctx,
+			`UPDATE fiscal_receipts
+			 SET status = $2, updated_at = $3
+			 WHERE payment_id = $1::uuid`,
+			paymentID,
+			receiptStatus,
+			now,
+		); err != nil {
+			return fmt.Errorf("update extension fiscal receipt status: %w", err)
+		}
+
+		return transaction.Commit(ctx)
 	}
 
 	if paymentStatus != StatusSucceeded &&
@@ -1378,4 +1707,11 @@ func (repository *PostgresRepository) RecordDepositRefund(
 	}
 
 	return transaction.Commit(ctx)
+}
+
+func stringValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }

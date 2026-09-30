@@ -126,6 +126,13 @@ export default function ProfileScreen() {
             initialBirthDate={client?.birth_date ?? ''}
             initialEmail={client?.email ?? ''}
             initialFullName={client?.full_name ?? ''}
+            initialClientType={client.client_type ?? 'individual'}
+            initialCompanyName={client.company_name ?? ''}
+            initialINN={client.inn ?? ''}
+            initialKPP={client.kpp ?? ''}
+            initialOGRN={client.ogrn ?? ''}
+            initialLegalAddress={client.legal_address ?? ''}
+            initialCompanyContact={client.company_contact ?? ''}
             onSubmit={save}
             submitLabel="Сохранить"
           />
@@ -133,14 +140,30 @@ export default function ProfileScreen() {
       ) : (
         <>
           <View style={styles.settingsGroup}>
+            <ProfileRow icon="business-outline" label="Тип клиента" value={client.client_type === 'legal_entity' ? 'Юридическое лицо' : 'Физическое лицо'} />
+            <View style={styles.divider} />
             <ProfileRow icon="mail-outline" label="Email" value={client?.email || 'Не указан'} />
+            {client.client_type !== 'legal_entity' ? (
+              <>
+                <View style={styles.divider} />
+                <ProfileRow
+                  icon="calendar-clear-outline"
+                  label="Дата рождения"
+                  value={formatBirthDateLabel(client?.birth_date ?? '') || 'Не указана'}
+                />
+              </>
+            ) : null}
             <View style={styles.divider} />
-            <ProfileRow
-              icon="calendar-clear-outline"
-              label="Дата рождения"
-              value={formatBirthDateLabel(client?.birth_date ?? '') || 'Не указана'}
-            />
-            <View style={styles.divider} />
+            {client.status === 'verified' ? (
+              <View style={styles.documentRow}>
+                <View style={styles.rowIcon}>
+                  <Ionicons color={colors.success} name="shield-checkmark" size={20} />
+                </View>
+                <View style={styles.rowText}>
+                  <Text style={styles.rowValue}>Личность подтверждена</Text>
+                </View>
+              </View>
+            ) : (
             <Pressable
               accessibilityHint="Открывает загрузку документов"
               accessibilityRole="button"
@@ -167,6 +190,25 @@ export default function ProfileScreen() {
               </View>
               <Ionicons color={colors.muted} name="chevron-forward" size={20} />
             </Pressable>
+            )}
+            {client.client_type === 'legal_entity' ? (
+              <>
+                <View style={styles.divider} />
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => router.push('/(app)/organization' as Href)}
+                  style={({ pressed }) => [styles.documentRow, pressed && styles.rowPressed]}
+                >
+                  <View style={styles.rowIcon}><Ionicons color={colors.primary} name="business-outline" size={20} /></View>
+                  <View style={styles.rowText}>
+                    <Text style={styles.rowLabel}>Реквизиты организации</Text>
+                    <Text numberOfLines={2} style={styles.rowValue}>{client.company_name || 'Заполнить реквизиты'}</Text>
+                    {client.inn ? <Text style={styles.documentStatus}>ИНН {client.inn}</Text> : null}
+                  </View>
+                  <Ionicons color={colors.muted} name="chevron-forward" size={20} />
+                </Pressable>
+              </>
+            ) : null}
           </View>
 
           <Pressable
@@ -188,7 +230,7 @@ function ProfileRow({
   label,
   value,
 }: {
-  icon: 'mail-outline' | 'calendar-clear-outline';
+  icon: 'mail-outline' | 'calendar-clear-outline' | 'business-outline' | 'document-text-outline' | 'location-outline';
   label: string;
   value: string;
 }) {

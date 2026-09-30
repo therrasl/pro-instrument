@@ -184,7 +184,46 @@ func (service *Service) Authenticate(ctx context.Context, token string) (Client,
 }
 
 func (service *Service) UpdateProfile(ctx context.Context, clientID string, patch ProfilePatch) (Client, error) {
-	if patch.FullName == nil && patch.BirthDate == nil && patch.Email == nil {
+	if patch.FullName == nil && patch.BirthDate == nil && patch.Email == nil && patch.ClientType == nil {
+		return Client{}, ErrInvalidInput
+	}
+	if patch.ClientType != nil {
+		value := strings.TrimSpace(*patch.ClientType)
+		if value != "individual" && value != "legal_entity" {
+			return Client{}, ErrInvalidInput
+		}
+		patch.ClientType = &value
+	}
+	trimField := func(value **string, maximum int, required bool) bool {
+		if *value == nil {
+			return !required
+		}
+		normalized := strings.TrimSpace(**value)
+		if (required && normalized == "") || len([]rune(normalized)) > maximum {
+			return false
+		}
+		*value = &normalized
+		return true
+	}
+	legal := patch.ClientType != nil && *patch.ClientType == "legal_entity"
+	if legal && (patch.Email == nil || strings.TrimSpace(*patch.Email) == "") {
+		return Client{}, ErrInvalidInput
+	}
+	if !trimField(&patch.CompanyName, 300, legal) ||
+		!trimField(&patch.INN, 12, legal) ||
+		!trimField(&patch.KPP, 9, false) ||
+		!trimField(&patch.OGRN, 15, legal) ||
+		!trimField(&patch.LegalAddress, 1000, legal) ||
+		!trimField(&patch.CompanyContact, 200, legal) {
+		return Client{}, ErrInvalidInput
+	}
+	if patch.INN != nil && *patch.INN != "" && !digitsLength(*patch.INN, 10, 12) {
+		return Client{}, ErrInvalidInput
+	}
+	if patch.KPP != nil && *patch.KPP != "" && !digitsLength(*patch.KPP, 9, 9) {
+		return Client{}, ErrInvalidInput
+	}
+	if patch.OGRN != nil && *patch.OGRN != "" && !digitsLength(*patch.OGRN, 13, 15) {
 		return Client{}, ErrInvalidInput
 	}
 
@@ -215,6 +254,18 @@ func (service *Service) UpdateProfile(ctx context.Context, clientID string, patc
 	}
 
 	return service.repository.UpdateProfile(ctx, clientID, patch)
+}
+
+func digitsLength(value string, minimum int, maximum int) bool {
+	if len(value) < minimum || len(value) > maximum {
+		return false
+	}
+	for _, character := range value {
+		if character < '0' || character > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func (service *Service) AcceptConsents(

@@ -13,6 +13,8 @@ import {
   Animated,
   Easing,
   Pressable,
+  KeyboardAvoidingView,
+  Platform,
   SafeAreaView,
   ScrollView,
   StyleSheet,
@@ -71,13 +73,21 @@ export function ScrollPage({
 }: PropsWithChildren<{ contentStyle?: StyleProp<ViewStyle> }>) {
   return (
     <Page>
-      <ScrollView
-        contentContainerStyle={[styles.scrollContent, contentStyle]}
-        keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator={false}
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 88 : 0}
+        style={styles.pageContent}
       >
-        {children}
-      </ScrollView>
+        <ScrollView
+          automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
+          contentContainerStyle={[styles.scrollContent, contentStyle]}
+          keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          {children}
+        </ScrollView>
+      </KeyboardAvoidingView>
     </Page>
   );
 }
@@ -192,7 +202,7 @@ export function Button({
   );
 }
 
-interface FieldProps extends Pick<TextInputProps, 'autoCapitalize' | 'maxLength' | 'secureTextEntry'> {
+interface FieldProps extends Pick<TextInputProps, 'autoCapitalize' | 'maxLength' | 'secureTextEntry' | 'multiline'> {
   label: string;
   value: string;
   onChangeText?: (value: string) => void;
@@ -247,7 +257,7 @@ export function Field({
           onFocus={() => setFocused(true)}
           placeholderTextColor={colors.muted}
           selectionColor={colors.primary}
-          style={[styles.field, focused && styles.fieldFocused, error && styles.fieldError]}
+          style={[styles.field, props.multiline && styles.fieldMultiline, focused && styles.fieldFocused, error && styles.fieldError]}
         />
       )}
       {error ? (
@@ -446,6 +456,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
   fieldFocused: { borderColor: colors.primary },
+  fieldMultiline: { minHeight: 92, paddingTop: spacing.md, textAlignVertical: 'top' },
   fieldPressable: {
     flexDirection: 'row',
     alignItems: 'center',

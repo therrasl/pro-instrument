@@ -127,9 +127,16 @@ func (handler *Handler) patchMe(response http.ResponseWriter, request *http.Requ
 	}
 
 	var body struct {
-		FullName  *string `json:"full_name"`
-		BirthDate *string `json:"birth_date"`
-		Email     *string `json:"email"`
+		FullName       *string `json:"full_name"`
+		BirthDate      *string `json:"birth_date"`
+		Email          *string `json:"email"`
+		ClientType     *string `json:"client_type"`
+		CompanyName    *string `json:"company_name"`
+		INN            *string `json:"inn"`
+		KPP            *string `json:"kpp"`
+		OGRN           *string `json:"ogrn"`
+		LegalAddress   *string `json:"legal_address"`
+		CompanyContact *string `json:"company_contact"`
 	}
 	if err := decodeJSON(response, request, &body); err != nil {
 		writeError(response, http.StatusBadRequest, "invalid request")
@@ -137,9 +144,16 @@ func (handler *Handler) patchMe(response http.ResponseWriter, request *http.Requ
 	}
 
 	updated, err := handler.service.UpdateProfile(request.Context(), client.ID, ProfilePatch{
-		FullName:  body.FullName,
-		BirthDate: body.BirthDate,
-		Email:     body.Email,
+		FullName:       body.FullName,
+		BirthDate:      body.BirthDate,
+		Email:          body.Email,
+		ClientType:     body.ClientType,
+		CompanyName:    body.CompanyName,
+		INN:            body.INN,
+		KPP:            body.KPP,
+		OGRN:           body.OGRN,
+		LegalAddress:   body.LegalAddress,
+		CompanyContact: body.CompanyContact,
 	})
 	if errors.Is(err, ErrInvalidInput) {
 		writeError(response, http.StatusBadRequest, "invalid profile")

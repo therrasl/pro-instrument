@@ -3,7 +3,6 @@ import {
   useFocusEffect,
   useLocalSearchParams,
   useRouter,
-  type Href,
 } from 'expo-router';
 import {
   useCallback,
@@ -13,6 +12,7 @@ import {
   type ReactNode,
 } from 'react';
 import {
+  ActivityIndicator,
   AppState,
   Image,
   Linking,
@@ -28,7 +28,9 @@ import { getTool } from '../../../src/api/catalog';
 import { resolveAPIAssetURL } from '../../../src/api/client';
 import {
   cancelRental,
+  createExtension,
   createRentalPayment,
+  getExtensionQuote,
   getRental,
 } from '../../../src/api/rentals';
 import { useSession } from '../../../src/auth/session';
@@ -64,8 +66,9 @@ import {
   spacing,
   typography,
 } from '../../../src/theme/tokens';
-import type { Rental, Tool } from '../../../src/types/api';
+import type { ExtensionQuote, Rental, Tool } from '../../../src/types/api';
 import { formatMoney } from '../../../src/utils/format';
+import { copyText } from '../../../src/utils/clipboard';
 
 const STATUS_POLL_INTERVAL_MS = 12_000;
 const MAX_STATUS_POLL_ATTEMPTS = 25;
@@ -82,12 +85,19 @@ function formatDate(value: string): string {
   }).format(new Date(year, month - 1, day));
 }
 
+function addDaysToDateString(dateStr: string, days: number): string {
+  const [year, month, day] = dateStr.split('-').map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
 export default function RentalDetailScreen() {
+	const router = useRouter();
   const { id, paymentStartedAt } = useLocalSearchParams<{
     id: string;
     paymentStartedAt?: string;
   }>();
-  const router = useRouter();
   const { token } = useSession();
   const [rental, setRental] = useState<Rental | null>(null);
   const [tool, setTool] = useState<Tool | null>(null);
@@ -102,8 +112,15 @@ export default function RentalDetailScreen() {
   const [cancelVisible, setCancelVisible] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [supportVisible, setSupportVisible] = useState(false);
+  const [supportCopied, setSupportCopied] = useState(false);
   const [focused, setFocused] = useState(false);
   const [error, setError] = useState('');
+  const [extensionModalVisible, setExtensionModalVisible] = useState(false);
+  const [extensionDays, setExtensionDays] = useState(1);
+  const [extensionQuote, setExtensionQuote] = useState<ExtensionQuote | null>(null);
+  const [quotingExtension, setQuotingExtension] = useState(false);
+  const [extending, setExtending] = useState(false);
+  const [extensionError, setExtensionError] = useState('');
   const paymentInFlight = useRef(false);
   const latestRequest = useRef(0);
   const statusPollAttempts = useRef(0);
@@ -368,6 +385,63 @@ export default function RentalDetailScreen() {
     }
   };
 
+  const copyOrderNumber = async () => {
+    if (!rental) return;
+    const copied = await copyText(rental.order_number ?? rental.id.slice(0, 8).toUpperCase());
+    setSupportCopied(copied);
+  };
+
+  const loadExtensionQuote = useCallback(async (days: number, currentRental = rental) => {
+    if (!token || !currentRental) return;
+    const newDate = addDaysToDateString(currentRental.end_date, days);
+    setQuotingExtension(true);
+    setExtensionError('');
+    try {
+      const quote = await getExtensionQuote(token, currentRental.id, newDate);
+      setExtensionQuote(quote);
+    } catch (cause) {
+      setExtensionQuote(null);
+      setExtensionError(cause instanceof Error ? cause.message : 'Не удалось рассчитать продление.');
+    } finally {
+      setQuotingExtension(false);
+    }
+  }, [rental, token]);
+
+  const openExtensionModal = () => {
+    setExtensionDays(1);
+    setExtensionError('');
+    setExtensionModalVisible(true);
+    void loadExtensionQuote(1);
+  };
+
+  const handleSelectDays = (days: number) => {
+    setExtensionDays(days);
+    void loadExtensionQuote(days);
+  };
+
+  const handleConfirmExtension = async () => {
+    if (!token || !rental || !extensionQuote || !extensionQuote.available || extending) return;
+    setExtending(true);
+    setExtensionError('');
+    try {
+      const extension = await createExtension(token, rental.id, extensionQuote.new_end_date);
+      setExtensionModalVisible(false);
+      if (extension.confirmation_url && isSafeConfirmationURL(extension.confirmation_url)) {
+        await rememberPendingPaymentRental(rental.id);
+        await Linking.openURL(extension.confirmation_url);
+        paymentPollStartedAt.current = Date.now();
+        setPaymentStarted(true);
+        void load('silent');
+      } else {
+        await load('refresh');
+      }
+    } catch (cause) {
+      setExtensionError(cause instanceof Error ? cause.message : 'Не удалось оформить продление.');
+    } finally {
+      setExtending(false);
+    }
+  };
+
   if (loading) {
     return (
       <Page>
@@ -396,13 +470,28 @@ export default function RentalDetailScreen() {
   const cancellable =
     rental.status === 'pending_manager' ||
     rental.status === 'awaiting_payment';
+  const canExtend = [
+    'rented',
+    'ready',
+    'handed_to_courier',
+    'awaiting_return',
+  ].includes(rental.status);
+  const canInspect = [
+    'ready',
+    'handed_to_courier',
+    'rented',
+    'awaiting_return',
+    'inspection',
+    'completed',
+  ].includes(rental.status);
   const paymentDeadlinePassed =
     rental.status === 'awaiting_payment' && remainingPaymentSeconds === 0;
   const showTransactionArea =
     (paymentStarted && rental.status === 'awaiting_payment') ||
     rental.status === 'awaiting_payment' ||
     Boolean(error) ||
-    cancellable;
+    cancellable ||
+    canExtend;
 
   return (
     <Page>
@@ -420,7 +509,7 @@ export default function RentalDetailScreen() {
       >
         <View style={styles.orderHeader}>
           <Text style={styles.orderNumber}>
-            Заказ №{rental.id.slice(0, 8).toUpperCase()}
+            Заказ №{rental.order_number ?? rental.id.slice(0, 8).toUpperCase()}
           </Text>
           <Text
             accessibilityRole="header"
@@ -459,40 +548,94 @@ export default function RentalDetailScreen() {
           <ToolSummary imageURL={imageURL} name={tool?.name ?? 'Инструмент'} />
         </Section>
 
-        <Section title="Аренда и получение">
-          <View style={styles.sectionSurface}>
-            <DetailRow
-              icon="calendar-outline"
-              label="Даты"
-              value={`${formatDate(rental.start_date)} — ${formatDate(rental.end_date)}`}
-            />
-            <DetailRow
-              icon={courier ? 'car-outline' : 'storefront-outline'}
-              label="Способ получения"
-              value={courier ? 'Курьерская доставка' : 'Самовывоз'}
-            />
-            {courier && rental.delivery_address ? (
-              <DetailRow
-                icon="location-outline"
-                label="Адрес"
-                value={rental.delivery_address}
-              />
-            ) : null}
-          </View>
-        </Section>
+        {(() => {
+          const now = new Date();
+          const [endYear, endMonth, endDay] = rental.end_date.split('-').map(Number);
+          const deadlineDate = new Date(endYear, endMonth - 1, endDay, 19, 0, 0);
+          const isOverdue =
+            (rental.status === 'rented' || rental.status === 'awaiting_return') &&
+            now.getTime() > deadlineDate.getTime();
+          const overdueDays = isOverdue
+            ? Math.max(1, Math.ceil((now.getTime() - deadlineDate.getTime()) / (1000 * 60 * 60 * 24)))
+            : 0;
+          const dailyRate =
+            rental.rental_days > 0 ? Math.round(rental.rental_price / rental.rental_days) : 0;
+          const overdueDebt = isOverdue ? overdueDays * dailyRate : 0;
 
-        <Section title="Стоимость">
-          <View style={styles.costSurface}>
-            <MoneyRow
-              label={`Аренда, ${rental.rental_days} дн.`}
-              value={rental.rental_price}
-            />
-            <MoneyRow label="Возвратный залог" value={rental.deposit_amount} />
-            <MoneyRow label="Доставка" value={rental.delivery_cost} />
-            <View style={styles.divider} />
-            <MoneyRow emphasized label="Итого" value={rental.total_amount} />
-          </View>
-        </Section>
+          return (
+            <>
+              <Section title="Сроки аренды и получение">
+                <View style={styles.sectionSurface}>
+                  <DetailRow
+                    icon="calendar-outline"
+                    label="Период аренды"
+                    value={`${formatDate(rental.start_date)} — ${formatDate(rental.end_date)} (${rental.rental_days} дн.)`}
+                  />
+                  <DetailRow
+                    icon="time-outline"
+                    label="Дата и время выдачи"
+                    value={
+                      rental.status === 'pending_manager' || rental.status === 'awaiting_payment'
+                        ? `${formatDate(rental.start_date)} с 09:00`
+                        : `${formatDate(rental.start_date)} с 09:00 (выдано)`
+                    }
+                  />
+                  <DetailRow
+                    icon="alarm-outline"
+                    label="Оплачено до (плановый возврат)"
+                    value={`${formatDate(rental.end_date)} до 19:00`}
+                  />
+                  <DetailRow
+                    icon={courier ? 'car-outline' : 'storefront-outline'}
+                    label="Способ получения"
+                    value={courier ? 'Курьерская доставка' : 'Самовывоз'}
+                  />
+                  {courier && rental.delivery_address ? (
+                    <DetailRow
+                      icon="location-outline"
+                      label="Адрес"
+                      value={rental.delivery_address}
+                    />
+                  ) : !courier && rental.pickup_address ? (
+                    <DetailRow icon="location-outline" label="Пункт выдачи" value={rental.pickup_address} />
+                  ) : null}
+                </View>
+              </Section>
+
+              {isOverdue ? (
+                <View style={styles.overdueAlert}>
+                  <View style={styles.overdueHeader}>
+                    <Ionicons color={colors.error} name="warning" size={22} />
+                    <Text style={styles.overdueTitle}>Просрочка возврата: {overdueDays} дн.</Text>
+                  </View>
+                  <Text style={styles.overdueBody}>
+                    Срок оплаченной аренды истёк {formatDate(rental.end_date)} в 19:00.
+                  </Text>
+                  <View style={styles.overdueDebtRow}>
+                    <Text style={styles.overdueDebtLabel}>Сумма к доплате:</Text>
+                    <Text style={styles.overdueDebtValue}>{formatMoney(overdueDebt)}</Text>
+                  </View>
+                  <Text style={styles.overdueHint}>
+                    Доплата ({formatMoney(dailyRate)}/сут.) может быть удержана из суммы обеспечительного платежа или внесена при возврате.
+                  </Text>
+                </View>
+              ) : null}
+
+              <Section title="Стоимость">
+                <View style={styles.costSurface}>
+                  <MoneyRow
+                    label={`Аренда, ${rental.rental_days} дн.`}
+                    value={rental.rental_price}
+                  />
+                  <MoneyRow label="Обеспечительный платеж" value={rental.deposit_amount} />
+                  <MoneyRow label="Доставка" value={rental.delivery_cost} />
+                  <View style={styles.divider} />
+                  <MoneyRow emphasized label="Итого" value={rental.total_amount} />
+                </View>
+              </Section>
+            </>
+          );
+        })()}
 
         <View style={styles.actionArea}>
           <View style={styles.utilityGroup}>
@@ -500,7 +643,12 @@ export default function RentalDetailScreen() {
               <CompactAction
                 icon="document-text-outline"
                 label="Документы"
-                onPress={() => router.push('/(app)/documents' as Href)}
+                onPress={() => router.push(`/(app)/rentals/${rental.id}/documents` as never)}
+              />
+              <CompactAction
+                icon="camera-outline"
+                label="Фото"
+                onPress={() => router.push(`/(app)/rentals/${rental.id}/photos` as never)}
               />
               <CompactAction
                 icon="chatbubble-ellipses-outline"
@@ -510,12 +658,35 @@ export default function RentalDetailScreen() {
             </View>
 
             {supportVisible ? (
-              <InlineNotice
-                icon="chatbubble-ellipses-outline"
-                message={`Сообщите менеджеру номер заказа ${rental.id
-                  .slice(0, 8)
-                  .toUpperCase()}, чтобы быстрее найти заявку.`}
-              />
+              <View style={styles.supportNotice}>
+                <InlineNotice
+                  icon="chatbubble-ellipses-outline"
+                  message={`Сообщите менеджеру номер заказа №${rental.order_number ?? rental.id.slice(0, 8).toUpperCase()}.`}
+                />
+                <Button
+                  label={supportCopied ? 'Номер скопирован' : 'Скопировать номер'}
+                  onPress={() => void copyOrderNumber()}
+                  variant="secondary"
+                />
+              </View>
+            ) : null}
+
+            {canInspect ? (
+              <Pressable
+                style={styles.inspectionCard}
+                onPress={() => router.push(`/(app)/rentals/${rental.id}/photos` as never)}
+              >
+                <View style={styles.inspectionIconBox}>
+                  <Ionicons name="camera-outline" size={20} color={colors.primary} />
+                </View>
+                <View style={styles.inspectionTextBox}>
+                  <Text style={styles.inspectionTitle}>Фотофиксация инструмента</Text>
+                  <Text style={styles.inspectionSubtitle}>
+                    5 ракурсов для проверки сохранности оборудования
+                  </Text>
+                </View>
+                <Ionicons name="chevron-forward" size={18} color={colors.muted} />
+              </Pressable>
             ) : null}
           </View>
 
@@ -572,6 +743,14 @@ export default function RentalDetailScreen() {
                   />
                 ) : null}
 
+                {canExtend ? (
+                  <Button
+                    icon="calendar-outline"
+                    label="Продлить аренду"
+                    onPress={() => openExtensionModal()}
+                  />
+                ) : null}
+
                 {cancellable ? (
                   <Button
                     disabled={cancelling}
@@ -608,6 +787,148 @@ export default function RentalDetailScreen() {
                 loading={cancelling}
                 onPress={() => void cancel()}
                 variant="danger"
+              />
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        animationType="fade"
+        onRequestClose={() => !extending && setExtensionModalVisible(false)}
+        transparent
+        visible={extensionModalVisible}
+      >
+        <View style={styles.modalBackdrop}>
+          <View accessibilityViewIsModal style={styles.extensionModal}>
+            <View style={styles.extensionModalHeader}>
+              <View style={{ flex: 1 }}>
+                <Text accessibilityRole="header" style={styles.modalTitle}>
+                  Продление аренды
+                </Text>
+                <Text style={styles.extensionModalSubtitle}>
+                  Текущий срок: до {formatDate(rental.end_date)}
+                </Text>
+              </View>
+              <Pressable
+                disabled={extending}
+                hitSlop={8}
+                onPress={() => setExtensionModalVisible(false)}
+              >
+                <Ionicons name="close" size={24} color={colors.ink} />
+              </Pressable>
+            </View>
+
+            <Text style={styles.extensionSectionTitle}>Срок продления:</Text>
+            <View style={styles.daysSelector}>
+              {[1, 2, 3, 5, 7].map((days) => (
+                <Pressable
+                  key={days}
+                  style={[
+                    styles.dayChip,
+                    extensionDays === days && styles.dayChipActive,
+                  ]}
+                  onPress={() => handleSelectDays(days)}
+                >
+                  <Text
+                    style={[
+                      styles.dayChipText,
+                      extensionDays === days && styles.dayChipTextActive,
+                    ]}
+                  >
+                    +{days} {days === 1 ? 'день' : days < 5 ? 'дня' : 'дней'}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+
+            {quotingExtension ? (
+              <View style={styles.extensionLoadingBox}>
+                <ActivityIndicator size="small" color={colors.primary} />
+                <Text style={styles.extensionLoadingText}>
+                  Проверяем доступность инструмента...
+                </Text>
+              </View>
+            ) : extensionQuote ? (
+              <View style={styles.extensionQuoteBox}>
+                <View style={styles.quoteRow}>
+                  <Text style={styles.quoteLabel}>Новая дата возврата:</Text>
+                  <Text style={styles.quoteValue}>
+                    {formatDate(extensionQuote.new_end_date)}
+                  </Text>
+                </View>
+                <View style={styles.quoteRow}>
+                  <Text style={styles.quoteLabel}>Дополнительно дней:</Text>
+                  <Text style={styles.quoteValue}>
+                    +{extensionQuote.additional_days} дн.
+                  </Text>
+                </View>
+                <View style={styles.quoteRow}>
+                  <Text style={styles.quoteLabel}>Тариф в сутки:</Text>
+                  <Text style={styles.quoteValue}>
+                    {formatMoney(extensionQuote.daily_price)}
+                  </Text>
+                </View>
+                <View style={styles.divider} />
+                <View style={styles.quoteRow}>
+                  <Text
+                    style={[
+                      styles.quoteLabel,
+                      { fontWeight: '700', color: colors.ink },
+                    ]}
+                  >
+                    К доплате:
+                  </Text>
+                  <Text
+                    style={[
+                      styles.quoteValue,
+                      { fontWeight: '800', color: colors.primary, fontSize: 17 },
+                    ]}
+                  >
+                    {formatMoney(extensionQuote.amount)}
+                  </Text>
+                </View>
+
+                {!extensionQuote.available ? (
+                  <View style={styles.extensionUnavailableNotice}>
+                    <Ionicons
+                      name="alert-circle-outline"
+                      size={18}
+                      color={colors.error}
+                    />
+                    <Text style={styles.extensionUnavailableText}>
+                      Инструмент забронирован следующим клиентом на выбранный период.
+                      Пожалуйста, выберите меньший срок.
+                    </Text>
+                  </View>
+                ) : null}
+              </View>
+            ) : null}
+
+            {extensionError ? (
+              <Text style={styles.extensionErrorText}>{extensionError}</Text>
+            ) : null}
+
+            <View style={styles.modalActions}>
+              <Button
+                disabled={extending}
+                label="Отмена"
+                onPress={() => setExtensionModalVisible(false)}
+                variant="secondary"
+              />
+              <Button
+                disabled={
+                  !extensionQuote ||
+                  !extensionQuote.available ||
+                  quotingExtension
+                }
+                label={
+                  extensionQuote && extensionQuote.available
+                    ? `Оплатить ${formatMoney(extensionQuote.amount)}`
+                    : 'Продлить'
+                }
+                loading={extending}
+                onPress={() => void handleConfirmExtension()}
               />
             </View>
           </View>
@@ -746,7 +1067,7 @@ function DetailRow({
   label,
   value,
 }: {
-  icon: 'calendar-outline' | 'car-outline' | 'storefront-outline' | 'location-outline';
+  icon: 'calendar-outline' | 'time-outline' | 'alarm-outline' | 'car-outline' | 'storefront-outline' | 'location-outline';
   label: string;
   value: string;
 }) {
@@ -787,7 +1108,7 @@ function CompactAction({
   label,
   onPress,
 }: {
-  icon: 'document-text-outline' | 'chatbubble-ellipses-outline';
+  icon: 'document-text-outline' | 'chatbubble-ellipses-outline' | 'camera-outline';
   label: string;
   onPress: () => void;
 }) {
@@ -801,8 +1122,9 @@ function CompactAction({
       ]}
     >
       <Ionicons color={colors.primary} name={icon} size={iconSizes.lg} />
-      <Text style={styles.compactActionLabel}>{label}</Text>
-      <Ionicons color={colors.muted} name="chevron-forward" size={iconSizes.md} />
+      <Text adjustsFontSizeToFit minimumFontScale={0.85} numberOfLines={1} style={styles.compactActionLabel}>
+        {label}
+      </Text>
     </Pressable>
   );
 }
@@ -1046,6 +1368,20 @@ const styles = StyleSheet.create({
   },
   actionArea: { gap: spacing.lg },
   utilityGroup: { gap: spacing.md },
+  supportNotice: { gap: spacing.sm },
+  orderDocuments: { gap: spacing.sm },
+  orderDocumentsTitle: { color: colors.ink, ...typography.section },
+  orderDocumentsEmpty: { color: colors.muted, ...typography.body },
+  documentLink: {
+    minHeight: 56,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    backgroundColor: colors.surfaceSubtle,
+  },
+  documentLinkText: { flex: 1, minWidth: 0, color: colors.ink, ...typography.label },
   transactionGroup: { gap: spacing.md },
   orderActions: { gap: spacing.sm },
   quickActions: { flexDirection: 'row', gap: spacing.md },
@@ -1101,4 +1437,184 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
   modalActions: { gap: spacing.md },
+  overdueAlert: {
+    borderRadius: radius.lg,
+    padding: spacing.lg,
+    gap: spacing.sm,
+    backgroundColor: colors.errorSoft,
+    borderWidth: 1,
+    borderColor: colors.error,
+  },
+  overdueHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  overdueTitle: {
+    color: colors.error,
+    fontSize: 16,
+    lineHeight: 21,
+    fontWeight: '800',
+  },
+  overdueBody: {
+    color: colors.ink,
+    fontSize: 14,
+    lineHeight: 19,
+  },
+  overdueDebtRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: spacing.xs,
+  },
+  overdueDebtLabel: {
+    color: colors.ink,
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: '700',
+  },
+  overdueDebtValue: {
+    color: colors.error,
+    fontSize: 18,
+    lineHeight: 23,
+    fontWeight: '800',
+    fontVariant: ['tabular-nums'],
+  },
+  overdueHint: {
+    color: colors.muted,
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  inspectionCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.surfaceSubtle,
+    padding: spacing.md,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.outline,
+    gap: spacing.sm,
+    marginTop: spacing.xs,
+  },
+  inspectionIconBox: {
+    width: 36,
+    height: 36,
+    borderRadius: radius.sm,
+    backgroundColor: colors.primarySoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  inspectionTextBox: {
+    flex: 1,
+    gap: 2,
+  },
+  inspectionTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: colors.ink,
+  },
+  inspectionSubtitle: {
+    fontSize: 12,
+    color: colors.muted,
+  },
+  extensionModal: {
+    borderRadius: radius.lg,
+    padding: spacing.xl,
+    gap: spacing.lg,
+    backgroundColor: colors.surface,
+  },
+  extensionModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+  },
+  extensionModalSubtitle: {
+    fontSize: 13,
+    color: colors.muted,
+    marginTop: 2,
+  },
+  extensionSectionTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: colors.ink,
+  },
+  daysSelector: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.xs,
+  },
+  dayChip: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: radius.pill,
+    backgroundColor: colors.surfaceSubtle,
+    borderWidth: 1,
+    borderColor: colors.outline,
+  },
+  dayChipActive: {
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  dayChipText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.ink,
+  },
+  dayChipTextActive: {
+    color: colors.white,
+  },
+  extensionLoadingBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: spacing.md,
+    gap: spacing.sm,
+  },
+  extensionLoadingText: {
+    fontSize: 13,
+    color: colors.muted,
+  },
+  extensionQuoteBox: {
+    backgroundColor: colors.surfaceSubtle,
+    padding: spacing.md,
+    borderRadius: radius.md,
+    gap: spacing.xs,
+    borderWidth: 1,
+    borderColor: colors.outline,
+  },
+  quoteRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 2,
+  },
+  quoteLabel: {
+    fontSize: 13,
+    color: colors.muted,
+  },
+  quoteValue: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.ink,
+  },
+  extensionUnavailableNotice: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    backgroundColor: colors.errorSoft,
+    padding: spacing.sm,
+    borderRadius: radius.sm,
+    gap: spacing.xs,
+    marginTop: spacing.xs,
+  },
+  extensionUnavailableText: {
+    fontSize: 12,
+    color: colors.error,
+    flex: 1,
+    lineHeight: 16,
+  },
+  extensionErrorText: {
+    fontSize: 13,
+    color: colors.error,
+    textAlign: 'center',
+  },
 });

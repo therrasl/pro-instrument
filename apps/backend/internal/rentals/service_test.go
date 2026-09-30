@@ -17,8 +17,11 @@ type fakeRepository struct {
 	create      func(context.Context, CreateCommand) (RentalRequest, error)
 	list        func(context.Context, string, int, int) ([]RentalRequest, error)
 	get         func(context.Context, string, string) (RentalRequest, error)
-	cancel      func(context.Context, string, string, time.Time) (RentalRequest, error)
-	expireHolds func(context.Context, time.Time) (int64, error)
+	cancel                     func(context.Context, string, string, time.Time) (RentalRequest, error)
+	expireHolds                func(context.Context, time.Time) (int64, error)
+	checkExtensionAvailability func(context.Context, string, time.Time, time.Time, string, time.Time) (bool, error)
+	saveInspectionPhoto        func(context.Context, InspectionPhoto) (InspectionPhoto, error)
+	listInspectionPhotos       func(context.Context, string, string) ([]InspectionPhoto, error)
 }
 
 func (repository fakeRepository) GetAvailableToolPricing(
@@ -69,6 +72,66 @@ func (repository fakeRepository) ExpireHolds(
 	now time.Time,
 ) (int64, error) {
 	return repository.expireHolds(ctx, now)
+}
+
+func (repository fakeRepository) ListDocumentsByClient(
+	context.Context,
+	string,
+	string,
+) ([]OrderDocument, error) {
+	return []OrderDocument{}, nil
+}
+
+func (repository fakeRepository) GetDocumentByClient(context.Context, string, string, string) (OrderDocument, error) {
+	return OrderDocument{}, ErrDocumentNotFound
+}
+
+func (repository fakeRepository) GetActiveRentalForExtension(ctx context.Context, clientID, rentalID string) (RentalRequest, error) {
+	if repository.get != nil {
+		return repository.get(ctx, clientID, rentalID)
+	}
+	return RentalRequest{}, ErrRentalNotFound
+}
+
+func (repository fakeRepository) CheckExtensionAvailability(ctx context.Context, toolID string, start, end time.Time, unitID string, now time.Time) (bool, error) {
+	if repository.checkExtensionAvailability != nil {
+		return repository.checkExtensionAvailability(ctx, toolID, start, end, unitID, now)
+	}
+	return true, nil
+}
+
+func (repository fakeRepository) CreateExtension(context.Context, string, time.Time, time.Time, int, int64, int64, time.Time) (RentalExtension, error) {
+	return RentalExtension{}, nil
+}
+
+func (repository fakeRepository) GetExtension(context.Context, string) (RentalExtension, error) {
+	return RentalExtension{}, nil
+}
+
+func (repository fakeRepository) ListExtensionsByRental(context.Context, string, string) ([]RentalExtension, error) {
+	return []RentalExtension{}, nil
+}
+
+func (repository fakeRepository) UpdateExtensionPaymentID(context.Context, string, string) error {
+	return nil
+}
+
+func (repository fakeRepository) SaveInspectionPhoto(ctx context.Context, photo InspectionPhoto) (InspectionPhoto, error) {
+	if repository.saveInspectionPhoto != nil {
+		return repository.saveInspectionPhoto(ctx, photo)
+	}
+	return photo, nil
+}
+
+func (repository fakeRepository) ListInspectionPhotos(ctx context.Context, clientID, rentalID string) ([]InspectionPhoto, error) {
+	if repository.listInspectionPhotos != nil {
+		return repository.listInspectionPhotos(ctx, clientID, rentalID)
+	}
+	return []InspectionPhoto{}, nil
+}
+
+func (repository fakeRepository) GetInspectionPhoto(context.Context, string, string, string) (InspectionPhoto, error) {
+	return InspectionPhoto{}, ErrPhotoNotFound
 }
 
 func TestQuoteCalculatesAmountsInKopecks(t *testing.T) {
@@ -136,6 +199,27 @@ func TestCourierRequiresAddress(t *testing.T) {
 	})
 	if !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("expected invalid input, got %v", err)
+	}
+}
+
+func TestSelfPickupQuoteReturnsConfiguredAddressAndNoDeliveryFee(t *testing.T) {
+	repository := defaultFakeRepository()
+	repository.getPricing = func(context.Context, string, time.Time, time.Time, time.Time) (ToolPricing, error) {
+		return ToolPricing{DailyPrice: 50_000, DepositAmount: 200_000}, nil
+	}
+	service := NewService(repository, 30*time.Minute, 100_000, "Москва, ул. Складская, 10")
+	service.now = func() time.Time { return time.Date(2026, time.August, 1, 10, 0, 0, 0, time.UTC) }
+	quote, err := service.Quote(context.Background(), QuoteRequest{
+		ToolID:         testToolID,
+		StartDate:      time.Date(2026, time.August, 2, 0, 0, 0, 0, time.UTC),
+		EndDate:        time.Date(2026, time.August, 2, 0, 0, 0, 0, time.UTC),
+		DeliveryMethod: DeliverySelfPickup,
+	})
+	if err != nil {
+		t.Fatalf("quote pickup: %v", err)
+	}
+	if quote.PickupAddress != "Москва, ул. Складская, 10" || quote.DeliveryCost != 0 || quote.TotalAmount != 250_000 {
+		t.Fatalf("unexpected pickup quote: %#v", quote)
 	}
 }
 

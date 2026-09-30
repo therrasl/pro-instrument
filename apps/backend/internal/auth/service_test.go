@@ -306,6 +306,37 @@ func TestUpdateProfileRejectsInvalidBirthDate(t *testing.T) {
 	}
 }
 
+func TestUpdateLegalEntityProfileValidatesAndPersistsRequisites(t *testing.T) {
+	clientType := "legal_entity"
+	fullName := "Иванов Иван"
+	email := "office@example.ru"
+	companyName := "ООО Про Инструмент"
+	inn := "7701234567"
+	kpp := "770101001"
+	ogrn := "1027700123456"
+	address := "Москва, ул. Складская, 10"
+	contact := "Иванов Иван, директор"
+	repository := fakeRepository{updateProfile: func(_ context.Context, _ string, patch ProfilePatch) (Client, error) {
+		if patch.ClientType == nil || *patch.ClientType != clientType ||
+			patch.CompanyName == nil || *patch.CompanyName != companyName ||
+			patch.INN == nil || *patch.INN != inn || patch.KPP == nil || *patch.KPP != kpp ||
+			patch.OGRN == nil || *patch.OGRN != ogrn ||
+			patch.LegalAddress == nil || *patch.LegalAddress != address {
+			t.Fatalf("unexpected legal profile patch: %#v", patch)
+		}
+		return Client{ClientType: clientType}, nil
+	}}
+	service := NewService(repository, &fakeSMSSender{}, 5*time.Minute, 24*time.Hour, testHashSecret)
+	_, err := service.UpdateProfile(context.Background(), "client-id", ProfilePatch{
+		ClientType: &clientType, FullName: &fullName, Email: &email,
+		CompanyName: &companyName, INN: &inn, KPP: &kpp, OGRN: &ogrn,
+		LegalAddress: &address, CompanyContact: &contact,
+	})
+	if err != nil {
+		t.Fatalf("update legal profile: %v", err)
+	}
+}
+
 func TestAcceptConsentsRequiresEveryConfirmation(t *testing.T) {
 	service := NewService(fakeRepository{}, &fakeSMSSender{}, 5*time.Minute, 24*time.Hour, testHashSecret)
 

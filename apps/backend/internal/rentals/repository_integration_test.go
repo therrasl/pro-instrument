@@ -261,6 +261,54 @@ func TestPostgresRentalHoldLifecycleAndIsolation(t *testing.T) {
 	}
 }
 
+func TestLegalRentalKeepsOrganizationSnapshot(t *testing.T) {
+	databaseURL := os.Getenv("TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("TEST_DATABASE_URL is not configured")
+	}
+	pool := openRentalTestDatabase(t, databaseURL)
+	repository := NewPostgresRepository(pool)
+	seedRentalTestData(t, pool)
+	_, err := pool.Exec(context.Background(), `UPDATE clients SET client_type='legal_entity', company_name='ООО Старое', inn='7705432109', kpp='770501001', ogrn='1157746123456', legal_address='Старый адрес', company_contact='Анна Соколова' WHERE id=$1::uuid`, integrationClientOne)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = pool.Exec(context.Background(), `INSERT INTO client_organizations (client_id,company_name,inn,kpp,ogrn,legal_address,email,phone,contact_full_name) VALUES ($1::uuid,'ООО Старое','7705432109','770501001','1157746123456','Старый адрес','legal@example.test','+79990000001','Анна Соколова')`, integrationClientOne)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	rental, err := repository.Create(context.Background(), integrationCommand(integrationClientOne, dateOnly(now.AddDate(0, 0, 10)), dateOnly(now.AddDate(0, 0, 12)), now, now.Add(30*time.Minute)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = pool.Exec(context.Background(), `UPDATE client_organizations SET company_name='ООО Новое',inn='7812345678',updated_at=NOW() WHERE client_id=$1::uuid`, integrationClientOne)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var company, inn string
+	if err := pool.QueryRow(context.Background(), `SELECT company_name,inn FROM rental_customer_snapshots WHERE rental_request_id=$1::uuid`, rental.ID).Scan(&company, &inn); err != nil {
+		t.Fatal(err)
+	}
+	if company != "ООО Старое" || inn != "7705432109" {
+		t.Fatalf("snapshot changed: %s %s", company, inn)
+	}
+	var documentID string
+	if err := pool.QueryRow(context.Background(), `INSERT INTO order_documents (rental_request_id,order_number,document_type,title,storage_key,mime_type) VALUES ($1::uuid,$2,'rental_contract','Договор','order-documents/test.pdf','application/pdf') RETURNING id::text`, rental.ID, rental.OrderNumber).Scan(&documentID); err != nil {
+		t.Fatal(err)
+	}
+	foreign, err := repository.ListDocumentsByClient(context.Background(), integrationClientTwo, rental.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(foreign) != 0 {
+		t.Fatalf("foreign client sees documents: %#v", foreign)
+	}
+	if _, err := repository.GetDocumentByClient(context.Background(), integrationClientTwo, rental.ID, documentID); !errors.Is(err, ErrDocumentNotFound) {
+		t.Fatalf("foreign document access: %v", err)
+	}
+}
+
 func openRentalTestDatabase(t *testing.T, databaseURL string) *pgxpool.Pool {
 	t.Helper()
 	ctx := context.Background()
@@ -302,6 +350,11 @@ func openRentalTestDatabase(t *testing.T, databaseURL string) *pgxpool.Pool {
 		"000009_rentals.up.sql",
 		"000010_bitrix_integration.up.sql",
 		"000011_yookassa_payments.up.sql",
+		"000013_order_numbers_b2b_documents.up.sql",
+		"000014_rental_documents_organizations.up.sql",
+		"000015_order_documents_storage_constraint.up.sql",
+		"000016_backfill_missing_rental_snapshots.up.sql",
+		"000017_rental_extensions_and_inspection_photos.up.sql",
 	} {
 		data, err := os.ReadFile(filepath.Join("..", "..", "migrations", migrationName))
 		if err != nil {

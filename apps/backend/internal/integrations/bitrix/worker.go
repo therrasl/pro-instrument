@@ -271,6 +271,12 @@ func (worker *Worker) updateDeal(ctx context.Context, rentalID string) error {
 		BitrixFieldDeposit:       formatMoney(data.DepositAmount),
 		BitrixFieldDailyPrice:    formatMoney(dailyRate),
 	}
+	if data.EndDate != "" {
+		updatePayload["CLOSEDATE"] = data.EndDate + "T19:00:00+03:00"
+		if worker.settings.Fields.EndDate != "" {
+			updatePayload[worker.settings.Fields.EndDate] = data.EndDate
+		}
+	}
 	if data.Status == rentals.StatusCompleted {
 		updatePayload[BitrixFieldDepositRefund] = formatMoney(data.DepositAmount)
 	}

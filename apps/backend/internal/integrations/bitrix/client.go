@@ -239,6 +239,27 @@ func (client *HTTPClient) GetContact(
 	}, nil
 }
 
+func (client *HTTPClient) AddDealComment(
+	ctx context.Context,
+	dealID string,
+	comment string,
+) error {
+	if strings.TrimSpace(dealID) == "" {
+		return errors.New("empty deal id")
+	}
+	if strings.TrimSpace(comment) == "" {
+		return nil
+	}
+	_, err := client.call(ctx, "crm.timeline.comment.add", map[string]any{
+		"fields": map[string]any{
+			"ENTITY_ID":   dealID,
+			"ENTITY_TYPE": "deal",
+			"COMMENT":     comment,
+		},
+	})
+	return err
+}
+
 func (client *HTTPClient) call(
 	ctx context.Context,
 	method string,

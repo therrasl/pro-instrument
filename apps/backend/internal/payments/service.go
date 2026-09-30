@@ -78,6 +78,15 @@ type Repository interface {
 	RejectEvent(context.Context, string, string, time.Time) error
 	GetDepositForRefund(context.Context, string) (DepositRefundData, error)
 	RecordDepositRefund(context.Context, string, int64, string, json.RawMessage, time.Time) error
+	PrepareExtensionPayment(
+		context.Context,
+		string,
+		string,
+		string,
+		int64,
+		bool,
+		time.Time,
+	) (Payment, CreateData, error)
 }
 
 type Service struct {
@@ -241,6 +250,93 @@ func (service *Service) Create(
 		)
 	}
 	return CreateResult{Payment: saved, Created: created}, nil
+}
+
+func (service *Service) CreateExtensionPayment(
+	ctx context.Context,
+	clientID string,
+	rentalID string,
+	extensionID string,
+	amount int64,
+	description string,
+) (string, string, error) {
+	if !service.enabled {
+		return "", "", ErrDisabled
+	}
+	now := service.now().UTC()
+	payment, data, err := service.repository.PrepareExtensionPayment(
+		ctx,
+		clientID,
+		rentalID,
+		extensionID,
+		amount,
+		service.receiptsEnabled,
+		now,
+	)
+	if err != nil {
+		return "", "", err
+	}
+	if payment.ProviderPaymentID != nil && payment.ConfirmationURL != nil && payment.Status != StatusCreating {
+		return payment.ID, *payment.ConfirmationURL, nil
+	}
+
+	input := yookassa.CreatePaymentRequest{
+		Amount: yookassa.Money{
+			Value:    formatKopecks(amount),
+			Currency: "RUB",
+		},
+		Capture: true,
+		Confirmation: yookassa.ConfirmationRequest{
+			Type:      "redirect",
+			ReturnURL: service.returnURL,
+		},
+		Description: description,
+		Metadata: map[string]string{
+			"rental_id":    rentalID,
+			"extension_id": extensionID,
+			"payment_type": "extension",
+			"payment_id":   payment.ID,
+		},
+	}
+	if service.receiptsEnabled {
+		vatCode := service.vatCode
+		if vatCode <= 0 {
+			vatCode = 1
+		}
+		items := make([]yookassa.ReceiptItem, len(data.ReceiptItems))
+		for i, item := range data.ReceiptItems {
+			item.VATCode = vatCode
+			items[i] = item
+		}
+		input.Receipt = &yookassa.Receipt{
+			Customer: yookassa.ReceiptCustomer{
+				Email: data.ClientEmail,
+				Phone: data.ClientPhone,
+			},
+			TaxSystemCode: service.taxSystemCode,
+			Items:         items,
+		}
+	}
+
+	providerPayment, err := service.provider.CreatePayment(
+		ctx,
+		payment.IdempotencyKey,
+		input,
+	)
+	if err != nil {
+		_ = service.repository.MarkCreationForReview(ctx, payment.ID, err.Error(), now)
+		return "", "", fmt.Errorf("%w: %v", ErrProviderUnavailable, err)
+	}
+
+	saved, err := service.repository.SaveProviderPayment(ctx, payment.ID, providerPayment, now)
+	if err != nil {
+		return "", "", err
+	}
+	confURL := ""
+	if saved.ConfirmationURL != nil {
+		confURL = *saved.ConfirmationURL
+	}
+	return saved.ID, confURL, nil
 }
 
 func (service *Service) RefundDeposit(

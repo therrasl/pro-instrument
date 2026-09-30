@@ -142,6 +142,11 @@ func run(logger *log.Logger) error {
 		settings.YooKassa.MaxAttempts,
 		logger,
 	).SetFiscalParameters(settings.YooKassa.TaxSystemCode, settings.YooKassa.VATCode)
+	rentalsService.SetExtensionPaymentCreator(paymentsService)
+	if settings.Bitrix.Enabled {
+		bitrixClient := bitrix.NewHTTPClient(settings.Bitrix.BaseURL, settings.Bitrix.HTTPTimeout)
+		rentalsService.SetInspectionPhotoNotifier(bitrix.NewDealPhotoNotifier(bitrixClient, settings.YooKassa.PublicBaseURL))
+	}
 	paymentsHandler := payments.NewHandler(paymentsService, logger)
 	yooKassaWebhookHandler := payments.NewWebhookHandler(paymentsService, logger)
 	pushRepository := push.NewPostgresRepository(pool)

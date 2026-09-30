@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import * as Clipboard from 'expo-clipboard';
+import { requireOptionalNativeModule } from 'expo';
 import {
   createContext,
   useContext,
@@ -8,7 +8,7 @@ import {
   useState,
   type PropsWithChildren,
 } from 'react';
-import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Modal, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { getPublicAppConfig, type PublicAppConfig } from '../api/app-config';
 import { Button } from '../components/ui';
 import { colors, radius, shadow, spacing, typography } from '../theme/tokens';
@@ -18,6 +18,23 @@ interface AppConfigValue {
 }
 
 const AppConfigContext = createContext<AppConfigValue>({ config: null });
+
+async function copyDemoCode(code: string): Promise<boolean> {
+  if (
+    Platform.OS !== 'web' &&
+    !requireOptionalNativeModule('ExpoClipboard')
+  ) {
+    return false;
+  }
+
+  try {
+    const Clipboard = await import('expo-clipboard');
+    await Clipboard.setStringAsync(code);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export function AppConfigProvider({ children }: PropsWithChildren) {
   const [config, setConfig] = useState<PublicAppConfig | null>(null);
@@ -76,8 +93,8 @@ export function AppConfigProvider({ children }: PropsWithChildren) {
                 accessibilityLabel={`Демо-код ${demoConfig.demo_otp_code}`}
                 accessibilityRole="button"
                 onPress={() => {
-                  void Clipboard.setStringAsync(demoConfig.demo_otp_code).then(() => {
-                    setCopied(true);
+                  void copyDemoCode(demoConfig.demo_otp_code).then((didCopy) => {
+                    if (didCopy) setCopied(true);
                   });
                 }}
                 style={({ pressed }) => [styles.codeRow, pressed && styles.codeRowPressed]}

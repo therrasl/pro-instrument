@@ -368,6 +368,7 @@ func openBitrixTestDatabase(t *testing.T, databaseURL string) *pgxpool.Pool {
 		"000014_rental_documents_organizations.up.sql",
 		"000015_order_documents_storage_constraint.up.sql",
 		"000016_backfill_missing_rental_snapshots.up.sql",
+		"000017_rental_extensions_and_inspection_photos.up.sql",
 	} {
 		data, err := os.ReadFile(filepath.Join("..", "..", "..", "migrations", migrationName))
 		if err != nil {

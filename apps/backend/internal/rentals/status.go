@@ -197,11 +197,28 @@ func (repository *PostgresRepository) ApplyBitrixStatus(
 }
 
 func validStatusTransition(currentStatus string, targetStatus string) bool {
+	if targetStatus == StatusRejected {
+		switch currentStatus {
+		case StatusPendingManager,
+			StatusAwaitingPayment,
+			StatusPaid,
+			StatusPreparing,
+			StatusReady,
+			StatusHandedToCourier,
+			StatusRented,
+			StatusAwaitingReturn,
+			StatusInspection:
+			return true
+		default:
+			return false
+		}
+	}
+
 	switch currentStatus {
 	case StatusPendingManager:
-		return targetStatus == StatusAwaitingPayment || targetStatus == StatusRejected
+		return targetStatus == StatusAwaitingPayment
 	case StatusAwaitingPayment:
-		return targetStatus == StatusPaid || targetStatus == StatusRejected
+		return targetStatus == StatusPaid
 	case StatusPaid:
 		return targetStatus == StatusPreparing
 	case StatusPreparing:

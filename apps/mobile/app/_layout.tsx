@@ -1,4 +1,3 @@
-import * as Notifications from 'expo-notifications';
 import { Stack, useRouter, type Href } from 'expo-router';
 import { useEffect, useRef } from 'react';
 import { StatusBar } from 'react-native';
@@ -7,7 +6,11 @@ import { AppConfigProvider } from '../src/app-config/context';
 import { SessionSkeleton } from '../src/components/skeleton';
 import { Button, Page, StateView } from '../src/components/ui';
 import { colors } from '../src/theme/tokens';
-import { rentalIDFromNotification } from '../src/notifications/push';
+import {
+  rentalIDFromNotification,
+  subscribeToNotificationResponses,
+} from '../src/notifications/push';
+import type { NotificationResponse } from 'expo-notifications';
 
 export default function RootLayout() {
   return (
@@ -76,8 +79,10 @@ function useNotificationNavigation(authenticated: boolean): void {
 
   useEffect(() => {
     if (!authenticated) return;
+    let active = true;
+    let unsubscribe: () => void = () => undefined;
 
-    const openRental = (response: Notifications.NotificationResponse) => {
+    const openRental = (response: NotificationResponse) => {
       const responseID = response.notification.request.identifier;
       if (lastHandledID.current === responseID) return;
       const rentalID = rentalIDFromNotification(response);
@@ -86,10 +91,13 @@ function useNotificationNavigation(authenticated: boolean): void {
       router.push(`/(app)/rentals/${encodeURIComponent(rentalID)}` as Href);
     };
 
-    void Notifications.getLastNotificationResponseAsync().then((response) => {
-      if (response) openRental(response);
+    void subscribeToNotificationResponses(openRental).then((nextUnsubscribe) => {
+      if (active) unsubscribe = nextUnsubscribe;
+      else nextUnsubscribe();
     });
-    const subscription = Notifications.addNotificationResponseReceivedListener(openRental);
-    return () => subscription.remove();
+    return () => {
+      active = false;
+      unsubscribe();
+    };
   }, [authenticated, router]);
 }

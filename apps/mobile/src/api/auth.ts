@@ -28,7 +28,13 @@ export function normalizeClientProgress(client: Client): Client {
     phone_verified: Boolean(client.phone_verified || client.phone_verified_at),
     offer_accepted: Boolean(client.offer_accepted || client.offer_accepted_at),
     profile_completed: Boolean(
-      client.profile_completed || (client.full_name?.trim() && client.birth_date),
+      client.profile_completed || (
+        client.full_name?.trim() && (
+          client.client_type === 'legal_entity'
+            ? client.company_name?.trim() && client.inn && client.ogrn && client.legal_address?.trim()
+            : client.birth_date
+        )
+      ),
     ),
   };
 }

@@ -2,7 +2,7 @@ import DateTimePicker, {
   type DateTimePickerEvent,
 } from '@react-native-community/datetimepicker';
 import { useRef, useState } from 'react';
-import { Modal, Platform, StyleSheet, Text, View } from 'react-native';
+import { Keyboard, Modal, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import type { ProfilePatch } from '../types/api';
 import { colors, radius, spacing } from '../theme/tokens';
 import { Button, Field } from './ui';
@@ -79,12 +79,26 @@ export function ProfileForm({
   initialFullName = '',
   initialBirthDate = '',
   initialEmail = '',
+  initialClientType = 'individual',
+  initialCompanyName = '',
+  initialINN = '',
+  initialKPP = '',
+  initialOGRN = '',
+  initialLegalAddress = '',
+  initialCompanyContact = '',
   submitLabel,
   onSubmit,
 }: {
   initialFullName?: string;
   initialBirthDate?: string;
   initialEmail?: string;
+  initialClientType?: 'individual' | 'legal_entity';
+  initialCompanyName?: string;
+  initialINN?: string;
+  initialKPP?: string;
+  initialOGRN?: string;
+  initialLegalAddress?: string;
+  initialCompanyContact?: string;
   submitLabel: string;
   onSubmit: (profile: ProfilePatch) => Promise<void>;
 }) {
@@ -92,6 +106,13 @@ export function ProfileForm({
   const [birthDate, setBirthDate] = useState(initialBirthDate);
   const [manualDate, setManualDate] = useState(formatBirthDateLabel(initialBirthDate));
   const [email, setEmail] = useState(initialEmail);
+  const [clientType, setClientType] = useState(initialClientType);
+  const [companyName, setCompanyName] = useState(initialCompanyName);
+  const [inn, setINN] = useState(initialINN);
+  const [kpp, setKPP] = useState(initialKPP);
+  const [ogrn, setOGRN] = useState(initialOGRN);
+  const [legalAddress, setLegalAddress] = useState(initialLegalAddress);
+  const [companyContact, setCompanyContact] = useState(initialCompanyContact);
   const [fullNameError, setFullNameError] = useState('');
   const [birthDateError, setBirthDateError] = useState('');
   const [emailError, setEmailError] = useState('');
@@ -131,20 +152,41 @@ export function ProfileForm({
   const submit = async () => {
     if (submissionInFlight.current) return;
     const nextFullNameError = getFullNameError(fullName);
-    const nextBirthDateError = getBirthDateError(birthDate);
+    const nextBirthDateError = clientType === 'individual' ? getBirthDateError(birthDate) : '';
     const nextEmailError = getEmailError(email);
     setFullNameError(nextFullNameError);
     setBirthDateError(nextBirthDateError);
     setEmailError(nextEmailError);
     if (nextFullNameError || nextBirthDateError || nextEmailError) return;
+    if (
+      clientType === 'legal_entity' &&
+      (!companyName.trim() ||
+        !/^(?:\d{10}|\d{12})$/u.test(inn) ||
+        !/^(?:\d{13}|\d{15})$/u.test(ogrn) ||
+        !legalAddress.trim() ||
+        !companyContact.trim() ||
+        !email.trim())
+    ) {
+      return;
+    }
 
     submissionInFlight.current = true;
     setSaving(true);
+    Keyboard.dismiss();
     try {
       await onSubmit({
         full_name: fullName.trim(),
-        birth_date: birthDate,
         email: email.trim(),
+        client_type: clientType,
+        ...(clientType === 'individual' ? { birth_date: birthDate } : {}),
+        ...(clientType === 'legal_entity' ? {
+          company_name: companyName.trim(),
+          inn,
+          kpp,
+          ogrn,
+          legal_address: legalAddress.trim(),
+          company_contact: companyContact.trim(),
+        } : {}),
       });
     } catch {
       // The parent surface owns the user-facing request error.
@@ -156,12 +198,33 @@ export function ProfileForm({
 
   const formValid =
     !getFullNameError(fullName) &&
-    !getBirthDateError(birthDate) &&
-    !getEmailError(email);
+    (clientType === 'legal_entity' || !getBirthDateError(birthDate)) &&
+    !getEmailError(email) &&
+    (clientType === 'individual' || Boolean(
+      companyName.trim() && /^(?:\d{10}|\d{12})$/u.test(inn) &&
+      (!kpp || /^\d{9}$/u.test(kpp)) && /^(?:\d{13}|\d{15})$/u.test(ogrn) &&
+      legalAddress.trim() && companyContact.trim() && email.trim()
+    ));
 
   return (
     <>
       <View style={styles.form}>
+        <View style={styles.typeGroup}>
+          <Text style={styles.typeLabel}>Тип клиента</Text>
+          <View style={styles.segmented}>
+            {([['individual', 'Физлицо'], ['legal_entity', 'Юрлицо']] as const).map(([value, label]) => (
+              <Pressable
+                accessibilityRole="radio"
+                accessibilityState={{ checked: clientType === value }}
+                key={value}
+                onPress={() => setClientType(value)}
+                style={[styles.segment, clientType === value && styles.segmentActive]}
+              >
+                <Text style={[styles.segmentText, clientType === value && styles.segmentTextActive]}>{label}</Text>
+              </Pressable>
+            ))}
+          </View>
+        </View>
         <Field
           autoCapitalize="words"
           error={fullNameError}
@@ -171,7 +234,7 @@ export function ProfileForm({
           placeholder="Иванов Иван Иванович"
           value={fullName}
         />
-        {Platform.OS === 'ios' || Platform.OS === 'android' ? (
+        {clientType === 'individual' && (Platform.OS === 'ios' || Platform.OS === 'android') ? (
           <Field
             error={birthDateError}
             label="Дата рождения"
@@ -180,7 +243,7 @@ export function ProfileForm({
             trailingIcon="calendar-outline"
             value={formatBirthDateLabel(birthDate)}
           />
-        ) : (
+        ) : clientType === 'individual' ? (
           <Field
             error={birthDateError}
             keyboardType="number-pad"
@@ -195,7 +258,17 @@ export function ProfileForm({
             placeholder="ДД.ММ.ГГГГ"
             value={manualDate}
           />
-        )}
+        ) : null}
+        {clientType === 'legal_entity' ? (
+          <>
+            <Field label="Название организации" onChangeText={setCompanyName} placeholder="ООО «Про Инструмент»" value={companyName} />
+            <Field keyboardType="number-pad" label="ИНН" maxLength={12} onChangeText={(value) => setINN(value.replace(/\D/g, ''))} placeholder="10 или 12 цифр" value={inn} />
+            <Field keyboardType="number-pad" label="КПП (при наличии)" maxLength={9} onChangeText={(value) => setKPP(value.replace(/\D/g, ''))} placeholder="9 цифр" value={kpp} />
+            <Field keyboardType="number-pad" label="ОГРН / ОГРНИП" maxLength={15} onChangeText={(value) => setOGRN(value.replace(/\D/g, ''))} placeholder="13 или 15 цифр" value={ogrn} />
+            <Field label="Юридический адрес" maxLength={1000} onChangeText={setLegalAddress} placeholder="Индекс, город, улица, дом" value={legalAddress} />
+            <Field label="ФИО / контакт" maxLength={200} onChangeText={setCompanyContact} placeholder="Контактное лицо" value={companyContact} />
+          </>
+        ) : null}
         <Field
           autoCapitalize="none"
           error={emailError}
@@ -217,7 +290,7 @@ export function ProfileForm({
         />
       </View>
 
-      {Platform.OS === 'android' && datePickerVisible ? (
+      {clientType === 'individual' && Platform.OS === 'android' && datePickerVisible ? (
         <DateTimePicker
           display="calendar"
           maximumDate={new Date()}
@@ -231,7 +304,7 @@ export function ProfileForm({
         animationType="slide"
         onRequestClose={() => setDatePickerVisible(false)}
         transparent
-        visible={Platform.OS === 'ios' && datePickerVisible}
+        visible={clientType === 'individual' && Platform.OS === 'ios' && datePickerVisible}
       >
         <View style={styles.pickerOverlay}>
           <View style={styles.pickerSheet}>
@@ -274,6 +347,13 @@ export function ProfileForm({
 
 const styles = StyleSheet.create({
   form: { gap: spacing.lg },
+  typeGroup: { gap: spacing.sm },
+  typeLabel: { color: colors.ink, fontSize: 14, lineHeight: 19, fontWeight: '600' },
+  segmented: { flexDirection: 'row', gap: spacing.xs, padding: spacing.xs, borderRadius: radius.button, backgroundColor: colors.surfaceStrong },
+  segment: { flex: 1, minHeight: 44, alignItems: 'center', justifyContent: 'center', borderRadius: radius.sm },
+  segmentActive: { backgroundColor: colors.surface },
+  segmentText: { color: colors.muted, fontSize: 14, lineHeight: 19, fontWeight: '700' },
+  segmentTextActive: { color: colors.primary },
   pickerOverlay: {
     flex: 1,
     justifyContent: 'flex-end',

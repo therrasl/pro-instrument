@@ -2,6 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   KeyboardAvoidingView,
+  Keyboard,
   Platform,
   Pressable,
   ScrollView,
@@ -45,6 +46,8 @@ export default function SignInScreen() {
   const [error, setError] = useState('');
   const [otpState, setOTPState] = useState<OTPVisualState>('idle');
   const [phoneFocused, setPhoneFocused] = useState(false);
+  const [verificationRevision, setVerificationRevision] = useState(0);
+  const codeRef = useRef('');
   const lastSubmittedCode = useRef('');
   const requestInFlight = useRef(false);
   const verificationInFlight = useRef(false);
@@ -62,6 +65,7 @@ export default function SignInScreen() {
     const validationError = getPhoneError(phone);
     setPhoneError(validationError);
     if (validationError) return;
+    Keyboard.dismiss();
 
     requestInFlight.current = true;
     setLoading(true);
@@ -70,6 +74,7 @@ export default function SignInScreen() {
       await requestCode(phone);
       setStep('code');
       setCode('');
+      codeRef.current = '';
       setOTPState('idle');
       lastSubmittedCode.current = '';
       setSecondsLeft(RESEND_SECONDS);
@@ -90,21 +95,26 @@ export default function SignInScreen() {
       return;
     }
     verificationInFlight.current = true;
-    lastSubmittedCode.current = code;
+    const submittedCode = code;
+    lastSubmittedCode.current = submittedCode;
     setLoading(true);
     setOTPState('verifying');
     setError('');
     try {
-      await verifyCode(phone, code, async () => {
+      await verifyCode(phone, submittedCode, async () => {
         setOTPState('success');
+        Keyboard.dismiss();
         await new Promise((resolve) => setTimeout(resolve, SUCCESS_ANIMATION_MS));
       });
     } catch (requestError) {
-      setOTPState('error');
-      setError(requestError instanceof Error ? requestError.message : 'Не удалось проверить код.');
+      if (codeRef.current === submittedCode) {
+        setOTPState('error');
+        setError(requestError instanceof Error ? requestError.message : 'Не удалось проверить код.');
+      }
     } finally {
       verificationInFlight.current = false;
       setLoading(false);
+      setVerificationRevision((current) => current + 1);
     }
   }, [code, phone, verifyCode]);
 
@@ -112,7 +122,7 @@ export default function SignInScreen() {
     if (step !== 'code' || code.length !== 6) return;
     const timeout = setTimeout(() => void confirmCode(), 120);
     return () => clearTimeout(timeout);
-  }, [code, confirmCode, step]);
+  }, [code, confirmCode, step, verificationRevision]);
 
   const updatePhone = (value: string) => {
     const formatted = formatPhone(value);
@@ -121,6 +131,7 @@ export default function SignInScreen() {
   };
 
   const updateCode = (value: string) => {
+    codeRef.current = value;
     lastSubmittedCode.current = '';
     setCode(value);
     setOTPState('idle');
@@ -130,6 +141,7 @@ export default function SignInScreen() {
   const editPhone = () => {
     setStep('phone');
     setCode('');
+    codeRef.current = '';
     setOTPState('idle');
     setError('');
     setPhoneError('');
@@ -139,7 +151,7 @@ export default function SignInScreen() {
     return (
       <Page>
         <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           style={styles.flex}
         >
           <ScrollView
@@ -186,7 +198,6 @@ export default function SignInScreen() {
               {error ? <ErrorNotice message={error} /> : null}
 
               <OTPInput
-                disabled={loading}
                 onChange={updateCode}
                 state={otpState}
                 value={code}
@@ -234,7 +245,7 @@ export default function SignInScreen() {
   return (
     <Page>
       <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.flex}
       >
         <ScrollView
@@ -287,6 +298,7 @@ export default function SignInScreen() {
                   placeholder="+7 (999) 000-00-00"
                   placeholderTextColor={colors.muted}
                   returnKeyType="done"
+                  onSubmitEditing={() => void sendCode()}
                   selectionColor={colors.primary}
                   style={styles.phoneInput}
                   textContentType="telephoneNumber"

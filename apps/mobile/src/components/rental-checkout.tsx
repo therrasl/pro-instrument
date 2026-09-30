@@ -14,6 +14,7 @@ import {
   Animated,
   Image,
   KeyboardAvoidingView,
+  Keyboard,
   Modal,
   Platform,
   Pressable,
@@ -25,11 +26,15 @@ import {
   type GestureResponderEvent,
 } from 'react-native';
 import { createRental, getRentalQuote } from '../api/rentals';
+import { getOrganization } from '../api/organization';
+import { useAppConfig } from '../app-config/context';
+import { useSession } from '../auth/session';
 import type {
   DeliveryMethod,
   Rental,
   RentalInput,
   RentalQuote,
+  Organization,
 } from '../types/api';
 import { formatMoney } from '../utils/format';
 import {
@@ -91,6 +96,9 @@ export function RentalCheckout({
   onCreated,
 }: RentalCheckoutProps) {
   const today = useMemo(() => startOfToday(), []);
+  const { config: appConfig } = useAppConfig();
+  const { client } = useSession();
+  const pickupAddress = appConfig?.pickup_address ?? '';
   const [startDate, setStartDate] = useState(today);
   const [endDate, setEndDate] = useState(() => addDays(today, 1));
   const [deliveryMethod, setDeliveryMethod] =
@@ -104,8 +112,14 @@ export function RentalCheckout({
   const [submitLoading, setSubmitLoading] = useState(false);
   const [quoteError, setQuoteError] = useState('');
   const [submitError, setSubmitError] = useState('');
+  const [organization, setOrganization] = useState<Organization | null>(null);
   const quoteSequence = useRef(0);
   const submitInFlight = useRef(false);
+
+  useEffect(() => {
+    if (client?.client_type !== 'legal_entity') return;
+    void getOrganization(token).then(setOrganization).catch(() => setOrganization(null));
+  }, [client?.client_type, token]);
 
   const input = useMemo<RentalInput>(
     () => ({
@@ -197,6 +211,7 @@ export function RentalCheckout({
       return;
     }
     submitInFlight.current = true;
+	Keyboard.dismiss();
     setSubmitLoading(true);
     setSubmitError('');
     try {
@@ -219,7 +234,7 @@ export function RentalCheckout({
   const minimumDate = dateField === 'end' ? startDate : today;
 
   return (
-    <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+    <>
       <View style={styles.checkout}>
         <View style={styles.heading}>
           <Text style={styles.title}>Оформление аренды</Text>
@@ -302,6 +317,14 @@ export function RentalCheckout({
             placeholder="Город, улица, дом, квартира"
             value={deliveryAddress}
           />
+        ) : pickupAddress ? (
+          <View style={styles.pickupAddress}>
+            <Ionicons color={colors.primary} name="location-outline" size={iconSizes.md} />
+            <View style={styles.pickupAddressCopy}>
+              <Text style={styles.pickupAddressLabel}>Пункт выдачи</Text>
+              <Text style={styles.pickupAddressValue}>{pickupAddress}</Text>
+            </View>
+          </View>
         ) : null}
 
         <QuoteSummary
@@ -321,11 +344,13 @@ export function RentalCheckout({
 
       <ConfirmationSheet
         address={input.delivery_address}
+        pickupAddress={pickupAddress}
         deliveryMethod={deliveryMethod}
         endDate={endDate}
         error={submitError}
         imageURL={toolImageURL}
         loading={submitLoading}
+        organization={client?.client_type === 'legal_entity' ? organization : null}
         onClose={closeConfirmation}
         onConfirm={() => void submit()}
         quote={currentQuote}
@@ -333,7 +358,7 @@ export function RentalCheckout({
         toolName={toolName}
         visible={confirmationVisible}
       />
-    </KeyboardAvoidingView>
+    </>
   );
 }
 
@@ -400,7 +425,7 @@ function QuoteSummary({
   return (
     <View accessibilityLiveRegion="polite" style={styles.quote}>
       <CostRow label={`Аренда, ${quote.rental_days} дн.`} value={quote.rental_price} />
-      <CostRow label="Возвратный залог" value={quote.deposit_amount} />
+      <CostRow label="Обеспечительный платеж" value={quote.deposit_amount} />
       <CostRow label="Доставка" value={quote.delivery_cost} />
       <View style={styles.totalDivider} />
       <CostRow emphasized label="Итого" value={quote.total_amount} />
@@ -410,11 +435,13 @@ function QuoteSummary({
 
 function ConfirmationSheet({
   address,
+  pickupAddress,
   deliveryMethod,
   endDate,
   error,
   imageURL,
   loading,
+  organization,
   onClose,
   onConfirm,
   quote,
@@ -423,11 +450,13 @@ function ConfirmationSheet({
   visible,
 }: {
   address: string;
+  pickupAddress: string;
   deliveryMethod: DeliveryMethod;
   endDate: Date;
   error: string;
   imageURL: string;
   loading: boolean;
+  organization: Organization | null;
   onClose: () => void;
   onConfirm: () => void;
   quote: RentalQuote | null;
@@ -604,6 +633,13 @@ function ConfirmationSheet({
               </View>
 
               <View style={styles.confirmationDetails}>
+                {organization ? (
+                  <ConfirmationRow
+                    icon="business-outline"
+                    label="Заказчик"
+                    value={`${organization.company_name} · ИНН ${organization.inn}`}
+                  />
+                ) : null}
                 <ConfirmationRow
                   icon={courier ? 'car-outline' : 'storefront-outline'}
                   label="Получение"
@@ -615,12 +651,18 @@ function ConfirmationSheet({
                     label="Адрес"
                     value={address}
                   />
-                ) : null}
+                ) : (
+                  <ConfirmationRow
+                    icon="location-outline"
+                    label="Пункт выдачи"
+                    value={pickupAddress}
+                  />
+                )}
               </View>
 
               <View style={styles.confirmationCosts}>
                 <CostRow label="Аренда" value={quote.rental_price} />
-                <CostRow label="Залог" value={quote.deposit_amount} />
+                <CostRow label="Обеспечительный платеж" value={quote.deposit_amount} />
                 <CostRow label="Доставка" value={quote.delivery_cost} />
                 <View style={styles.totalDivider} />
                 <CostRow emphasized label="Итого" value={quote.total_amount} />
@@ -670,7 +712,7 @@ function ConfirmationRow({
   label,
   value,
 }: {
-  icon: 'car-outline' | 'storefront-outline' | 'location-outline';
+  icon: 'car-outline' | 'storefront-outline' | 'location-outline' | 'business-outline';
   label: string;
   value: string;
 }) {
@@ -923,6 +965,17 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     backgroundColor: colors.surfaceSubtle,
   },
+  pickupAddress: {
+    borderRadius: radius.md,
+    padding: spacing.md,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.md,
+    backgroundColor: colors.primarySoft,
+  },
+  pickupAddressCopy: { flex: 1, minWidth: 0, gap: spacing.xs },
+  pickupAddressLabel: { color: colors.muted, ...typography.caption },
+  pickupAddressValue: { color: colors.ink, ...typography.body, fontWeight: '600' },
   confirmationRow: {
     minHeight: 64,
     paddingHorizontal: spacing.lg,

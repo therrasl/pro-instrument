@@ -29,12 +29,25 @@
       "supportsTablet": true,
       "infoPlist": {
         "NSCameraUsageDescription": "Разрешите сделать фотографию документа.",
-        "NSPhotoLibraryUsageDescription": "Разрешите выбрать фотографию документа."
+        "NSPhotoLibraryUsageDescription": "Разрешите выбрать фотографию документа.",
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": true
+        }
       }
     },
     "android": {
       "package": "ru.proinstrument.mobile",
-      "googleServicesFile": "./google-services.json"
+      "googleServicesFile": "./google-services.json",
+      "softwareKeyboardLayoutMode": "resize",
+      "permissions": [
+        "android.permission.RECORD_AUDIO"
+      ]
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "a4c62522-7800-4c1c-ada6-a55c18af8758"
+      }
     }
   }
 }

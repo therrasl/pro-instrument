@@ -176,6 +176,7 @@ func (repository *PostgresRepository) VerifyCodeAndCreateSession(
 		 	full_name,
 		 	birth_date::text,
 		 	email,
+			client_type, company_name, inn, kpp, ogrn, legal_address, company_contact,
 		 	status,
             (
                 SELECT reason
@@ -231,8 +232,12 @@ func (repository *PostgresRepository) consumeInvalidCode(
 		ctx,
 		`UPDATE phone_verification_codes
 		 SET
-		 	attempts = $2,
-		 	consumed_at = CASE WHEN $2 >= $3 OR expires_at <= $4 THEN $4 ELSE consumed_at END
+			attempts = $2::integer,
+			consumed_at = CASE
+				WHEN $2::integer >= $3::integer OR expires_at <= $4::timestamptz
+				THEN $4::timestamptz
+				ELSE consumed_at
+			END
 		 WHERE id = $1::uuid`,
 		codeID,
 		attempts,
@@ -275,6 +280,8 @@ func (repository *PostgresRepository) AuthenticateSession(
 			c.full_name,
 			c.birth_date::text,
 			c.email,
+			c.client_type, c.company_name, c.inn, c.kpp, c.ogrn,
+			c.legal_address, c.company_contact,
 			c.status,
 			(
 				SELECT reason
@@ -329,10 +336,24 @@ func (repository *PostgresRepository) UpdateProfile(
                 WHEN $4::text IS NULL THEN email
                 ELSE NULLIF(BTRIM($4::text), '')
             END,
-		 	status = CASE
-		 		WHEN status IN ('registered', 'phone_verified')
-		 			AND NULLIF(BTRIM(COALESCE($2::text, full_name)), '') IS NOT NULL
-		 			AND COALESCE($3::date, birth_date) IS NOT NULL
+			client_type = COALESCE($5::text, client_type),
+			company_name = COALESCE($6::text, company_name),
+			inn = COALESCE($7::text, inn),
+			kpp = COALESCE($8::text, kpp),
+			ogrn = COALESCE($9::text, ogrn),
+			legal_address = COALESCE($10::text, legal_address),
+			company_contact = COALESCE($11::text, company_contact),
+			status = CASE
+			WHEN status IN ('registered', 'phone_verified')
+				AND NULLIF(BTRIM(COALESCE($2::text, full_name)), '') IS NOT NULL
+				AND (
+					(COALESCE($5::text, client_type) = 'individual' AND COALESCE($3::date, birth_date) IS NOT NULL)
+					OR (COALESCE($5::text, client_type) = 'legal_entity'
+						AND NULLIF(BTRIM(COALESCE($6::text, company_name)), '') IS NOT NULL
+						AND NULLIF(BTRIM(COALESCE($7::text, inn)), '') IS NOT NULL
+						AND NULLIF(BTRIM(COALESCE($9::text, ogrn)), '') IS NOT NULL
+						AND NULLIF(BTRIM(COALESCE($10::text, legal_address)), '') IS NOT NULL)
+				)
 		 		THEN 'profile_completed'
 		 		ELSE status
 		 	END,
@@ -367,6 +388,7 @@ func (repository *PostgresRepository) UpdateProfile(
 		 	full_name,
 		 	birth_date::text,
 		 	email,
+			client_type, company_name, inn, kpp, ogrn, legal_address, company_contact,
 		 	status,
             (
                 SELECT reason
@@ -381,6 +403,13 @@ func (repository *PostgresRepository) UpdateProfile(
 		nullableString(patch.FullName),
 		nullableString(patch.BirthDate),
 		nullableString(patch.Email),
+		nullableString(patch.ClientType),
+		nullableString(patch.CompanyName),
+		nullableString(patch.INN),
+		nullableString(patch.KPP),
+		nullableString(patch.OGRN),
+		nullableString(patch.LegalAddress),
+		nullableString(patch.CompanyContact),
 	))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Client{}, ErrUnauthorized
@@ -465,6 +494,13 @@ func scanClient(row clientScanner) (Client, error) {
 		&client.FullName,
 		&client.BirthDate,
 		&client.Email,
+		&client.ClientType,
+		&client.CompanyName,
+		&client.INN,
+		&client.KPP,
+		&client.OGRN,
+		&client.LegalAddress,
+		&client.CompanyContact,
 		&client.Status,
 		&client.VerificationRejectionReason,
 		&client.CreatedAt,
@@ -487,6 +523,13 @@ func scanSessionClient(row clientScanner, sessionID *string) (Client, error) {
 		&client.FullName,
 		&client.BirthDate,
 		&client.Email,
+		&client.ClientType,
+		&client.CompanyName,
+		&client.INN,
+		&client.KPP,
+		&client.OGRN,
+		&client.LegalAddress,
+		&client.CompanyContact,
 		&client.Status,
 		&client.VerificationRejectionReason,
 		&client.CreatedAt,
@@ -501,9 +544,13 @@ func scanSessionClient(row clientScanner, sessionID *string) (Client, error) {
 func (client *Client) setProgress() {
 	client.PhoneVerified = client.PhoneVerifiedAt != nil
 	client.OfferAccepted = client.OfferAcceptedAt != nil
-	client.ProfileCompleted = client.FullName != nil &&
-		strings.TrimSpace(*client.FullName) != "" &&
-		client.BirthDate != nil
+	client.ProfileCompleted = client.FullName != nil && strings.TrimSpace(*client.FullName) != ""
+	if client.ClientType == "legal_entity" {
+		client.ProfileCompleted = client.ProfileCompleted && client.CompanyName != nil &&
+			client.INN != nil && client.OGRN != nil && client.LegalAddress != nil
+	} else {
+		client.ProfileCompleted = client.ProfileCompleted && client.BirthDate != nil
+	}
 }
 
 func nullableString(value *string) any {

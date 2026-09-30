@@ -33,7 +33,7 @@ function userMessage(status: number, serverMessage?: string): string {
   if (serverMessage === 'invalid rental request') {
     return 'Проверьте даты и способ получения.';
   }
-  if (serverMessage === 'rental onboarding is incomplete') {
+  if (serverMessage === 'rental onboarding is incomplete' || serverMessage === 'client verification is incomplete') {
     return 'Для аренды сначала завершите проверку документов.';
   }
   if (serverMessage === 'no tool unit is available for selected dates') {
@@ -55,7 +55,7 @@ function userMessage(status: number, serverMessage?: string): string {
     return 'Добавьте email в профиль для получения чека.';
   }
   if (serverMessage === 'payment provider is unavailable') {
-    return 'Оплата временно недоступна. Попробуйте позже.';
+    return 'Платёжный сервис временно недоступен. Попробуйте позже.';
   }
   if (serverMessage === 'payment requires reconciliation') {
     return 'Проверяем платёж вручную. Повторно платить не нужно.';
@@ -63,10 +63,26 @@ function userMessage(status: number, serverMessage?: string): string {
   if (serverMessage === 'rental request not found') {
     return 'Заявка не найдена или недоступна.';
   }
+  if (serverMessage === 'tool is not available for requested extension period') {
+    return 'На выбранные даты инструмент уже забронирован следующим клиентом.';
+  }
+  if (serverMessage === 'new end date must be after current end date') {
+    return 'Новая дата возврата должна быть позже текущей даты возврата.';
+  }
+  if (serverMessage === 'rental is not active for extension') {
+    return 'Продление возможно только для активной аренды.';
+  }
+  if (serverMessage === 'invalid inspection photo file') {
+    return 'Файл фотографии некорректен или поврежден.';
+  }
+  if (serverMessage && serverMessage.trim()) {
+    return serverMessage;
+  }
   if (status === 401) return 'Войдите в аккаунт ещё раз.';
-  if (status === 409) return 'Документ этого типа уже загружен.';
+  if (status === 403) return 'Действие недоступно. Проверьте статус верификации.';
+  if (status === 409) return 'Конфликт состояния заявки. Обновите страницу.';
   if (status === 429) return 'Слишком много попыток. Попробуйте позже.';
-  if (status >= 500) return 'Сервис временно недоступен. Попробуйте позже.';
+  if (status >= 500) return 'Сервер временно недоступен. Попробуйте позже.';
   return 'Не удалось выполнить запрос.';
 }
 

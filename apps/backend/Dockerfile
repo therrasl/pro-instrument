@@ -12,7 +12,9 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/api ./c
     && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/bitrix-worker ./cmd/bitrix-worker \
     && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/yookassa-worker ./cmd/yookassa-worker \
     && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/expire-holds ./cmd/expire-holds \
-    && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/reconcile-bitrix ./cmd/reconcile-bitrix
+    && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/reconcile-bitrix ./cmd/reconcile-bitrix \
+    && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/order-documents-worker ./cmd/order-documents-worker \
+    && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/seed-demo ./cmd/seed-demo
 
 FROM alpine:3.22
 RUN apk add --no-cache ca-certificates tzdata \

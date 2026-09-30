@@ -23,6 +23,7 @@ type Client interface {
 	GetDeal(context.Context, string) (DealState, error)
 	GetDealFull(context.Context, string) (DealFull, error)
 	GetContact(context.Context, string) (ContactDetails, error)
+	AddDealComment(context.Context, string, string) error
 }
 
 type ContactInput struct {

@@ -18,10 +18,10 @@ func TestPublicAppConfigEnabled(t *testing.T) {
 	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}
-	if body["demo_mode"] != true || body["demo_otp_code"] != "654321" || body["message"] == "" {
+	if body["demo_mode"] != true || body["demo_otp_code"] != "654321" || body["message"] == "" || body["pickup_address"] == "" {
 		t.Fatalf("unexpected enabled config: %#v", body)
 	}
-	if len(body) != 3 {
+	if len(body) != 4 {
 		t.Fatalf("public config exposes unexpected fields: %#v", body)
 	}
 }
@@ -32,14 +32,14 @@ func TestPublicAppConfigDisabled(t *testing.T) {
 	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}
-	if body["demo_mode"] != false || len(body) != 1 {
+	if body["demo_mode"] != false || body["pickup_address"] == "" || len(body) != 2 {
 		t.Fatalf("disabled config must only expose demo_mode=false: %#v", body)
 	}
 }
 
 func serveAppConfig(enabled bool, code string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
-	appconfig.NewHandler(enabled, code).Register(mux)
+	appconfig.NewHandler(enabled, code, "Москва, пункт выдачи").Register(mux)
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/public/app-config", nil)
 	response := httptest.NewRecorder()
 	mux.ServeHTTP(response, request)

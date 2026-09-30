@@ -1,13 +1,9 @@
 name: pro-instrument
 
 x-backend: &backend
-  build:
-    context: .
-    dockerfile: Dockerfile
-  image: pro-instrument-backend:local
+  image: pro-instrument-backend:production
   env_file:
-    - backend.env
-    - runtime.env
+    - .env
   volumes:
     - ./storage:/app/storage
   restart: unless-stopped
@@ -17,12 +13,18 @@ x-backend: &backend
 services:
   postgres:
     image: postgres:17-alpine
-    env_file:
-      - postgres.env
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: ${POSTGRES_ADMIN_USER:?POSTGRES_ADMIN_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?POSTGRES_ADMIN_PASSWORD is required}
+      APP_DB_NAME: ${POSTGRES_DB:?POSTGRES_DB is required}
+      APP_DB_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      APP_DB_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init-app-db.sh:/docker-entrypoint-initdb.d/10-app-db.sh:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      test: ["CMD-SHELL", "pg_isready -U $$APP_DB_USER -d $$APP_DB_NAME"]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -32,6 +34,8 @@ services:
 
   migrate:
     <<: *backend
+    environment:
+      DATABASE_URL: ${MIGRATION_DATABASE_URL:?MIGRATION_DATABASE_URL is required}
     entrypoint: ["/usr/local/bin/migrate"]
     command: ["up"]
     depends_on:
@@ -41,8 +45,11 @@ services:
 
   api:
     <<: *backend
+    build:
+      context: .
+      dockerfile: Dockerfile
     ports:
-      - "80:8080"
+      - "127.0.0.1:18080:8080"
     depends_on:
       postgres:
         condition: service_healthy
@@ -73,8 +80,48 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  order-documents-worker:
+    <<: *backend
+    entrypoint: ["/usr/local/bin/order-documents-worker"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  postgres-backup:
+    image: postgres:17-alpine
+    environment:
+      PGHOST: postgres
+      PGDATABASE: ${POSTGRES_DB:?POSTGRES_DB is required}
+      PGUSER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        umask 077
+        while true; do
+          stamp="$$(date -u +%Y%m%dT%H%M%SZ)"
+          temporary="/backups/pro_instrument_$${stamp}.dump.tmp"
+          pg_dump --format=custom --no-owner --no-acl --file="$${temporary}"
+          mv "$${temporary}" "$${temporary%.tmp}"
+          ls -1t /backups/pro_instrument_*.dump | tail -n +8 | xargs -r rm -f
+          sleep 86400
+        done
+    volumes:
+      - postgres_backups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    networks:
+      - backend
+
 volumes:
   postgres_data:
+  postgres_backups:
 
 networks:
   backend:

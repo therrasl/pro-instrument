@@ -284,6 +284,18 @@ func (repository *repositoryStub) PreparePayment(
 	return repository.prepared, repository.createData, repository.created, repository.prepareErr
 }
 
+func (repository *repositoryStub) PrepareExtensionPayment(
+	context.Context,
+	string,
+	string,
+	string,
+	int64,
+	bool,
+	time.Time,
+) (Payment, CreateData, error) {
+	return repository.prepared, repository.createData, repository.prepareErr
+}
+
 func (repository *repositoryStub) SaveProviderPayment(
 	_ context.Context,
 	_ string,

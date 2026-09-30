@@ -84,12 +84,19 @@ export function OTPInput({
     onChange(normalizeOTP(nextValue));
   };
 
+  const focusAtEnd = () => {
+    inputRef.current?.focus();
+    inputRef.current?.setNativeProps({
+      selection: { end: value.length, start: value.length },
+    });
+  };
+
   return (
     <Pressable
       accessibilityLabel="Шестизначный код из SMS"
       accessibilityRole="none"
       accessibilityValue={{ text: `Введено ${value.length} из ${CODE_LENGTH} цифр` }}
-      onPress={() => inputRef.current?.focus()}
+      onPress={focusAtEnd}
       style={styles.wrapper}
     >
       <View importantForAccessibility="no-hide-descendants" style={styles.cells}>
@@ -153,6 +160,8 @@ export function OTPInput({
         keyboardType="number-pad"
         maxLength={CODE_LENGTH}
         onChangeText={update}
+        pointerEvents="none"
+        selection={{ end: value.length, start: value.length }}
         selectionColor="transparent"
         style={styles.hiddenInput}
         textContentType="oneTimeCode"

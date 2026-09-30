@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import appJson from '../app.json';
 
-describe('mobile scaffold', () => {
-  it('has a working test runner', () => {
-    expect(true).toBe(true);
+describe('Android form layout', () => {
+  it('resizes the activity when the keyboard opens', () => {
+    expect(appJson.expo.android.softwareKeyboardLayoutMode).toBe('resize');
   });
 });
-

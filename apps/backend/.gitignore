@@ -6,3 +6,4 @@
 backend.env
 runtime.env
 postgres.env
+/output/

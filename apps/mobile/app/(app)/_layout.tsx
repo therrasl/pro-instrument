@@ -22,6 +22,9 @@ export default function AppLayout() {
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="tools/[id]" options={{ title: 'Инструмент' }} />
         <Stack.Screen name="rentals/[id]" options={{ title: 'Заказ' }} />
+        <Stack.Screen name="rentals/[id]/documents" options={{ title: 'Документы заказа' }} />
+        <Stack.Screen name="rentals/[id]/photos" options={{ title: 'Фотофиксация' }} />
+        <Stack.Screen name="organization" options={{ title: 'Реквизиты организации' }} />
         <Stack.Screen name="payment-return" options={{ title: 'Проверка оплаты' }} />
         <Stack.Screen name="rental-unavailable" options={{ title: 'Аренда' }} />
         <Stack.Screen name="documents" options={{ title: 'Документы' }} />

@@ -111,6 +111,16 @@ func (repository *PostgresRepository) Create(
 		_ = transaction.Rollback(ctx)
 	}()
 
+	var customerReady bool
+	if err := transaction.QueryRow(ctx, `SELECT c.client_type = 'individual' OR o.client_id IS NOT NULL
+		FROM clients AS c LEFT JOIN client_organizations AS o ON o.client_id=c.id
+		WHERE c.id=$1::uuid`, command.ClientID).Scan(&customerReady); err != nil {
+		return RentalRequest{}, fmt.Errorf("check rental customer: %w", err)
+	}
+	if !customerReady {
+		return RentalRequest{}, ErrOnboardingIncomplete
+	}
+
 	if _, err := expireHoldsTx(ctx, transaction, command.Now); err != nil {
 		return RentalRequest{}, err
 	}
@@ -208,6 +218,7 @@ func (repository *PostgresRepository) Create(
 		)
 		RETURNING
 			id::text,
+			order_number,
 			client_id::text,
 			tool_id::text,
 			tool_unit_id::text,
@@ -245,6 +256,33 @@ func (repository *PostgresRepository) Create(
 	}
 	if err != nil {
 		return RentalRequest{}, fmt.Errorf("insert rental request: %w", err)
+	}
+
+	if _, err := transaction.Exec(
+		ctx,
+		`INSERT INTO rental_customer_snapshots (
+			rental_request_id, order_number, client_type, full_name, email,
+			company_name, inn, kpp, ogrn, legal_address, company_contact,
+			actual_address, settlement_account, bik, correspondent_account,
+			bank_name, organization_phone, contact_position, created_at
+		)
+		SELECT
+			$1::uuid, $2, c.client_type, c.full_name, c.email,
+			COALESCE(o.company_name, c.company_name), COALESCE(o.inn, c.inn),
+			COALESCE(o.kpp, c.kpp), COALESCE(o.ogrn, c.ogrn),
+			COALESCE(o.legal_address, c.legal_address),
+			COALESCE(o.contact_full_name, c.company_contact),
+			o.actual_address, o.settlement_account, o.bik, o.correspondent_account,
+			o.bank_name, o.phone, o.contact_position, $3
+		FROM clients AS c
+		LEFT JOIN client_organizations AS o ON o.client_id = c.id
+		WHERE c.id = $4::uuid`,
+		rental.ID,
+		rental.OrderNumber,
+		command.Now,
+		command.ClientID,
+	); err != nil {
+		return RentalRequest{}, fmt.Errorf("snapshot rental customer: %w", err)
 	}
 
 	if _, err := transaction.Exec(
@@ -380,6 +418,7 @@ func (repository *PostgresRepository) ListByClient(
 		ctx,
 		`SELECT
 			id::text,
+			order_number,
 			client_id::text,
 			tool_id::text,
 			tool_unit_id::text,
@@ -433,6 +472,7 @@ func (repository *PostgresRepository) GetByClient(
 		ctx,
 		`SELECT
 			id::text,
+			order_number,
 			client_id::text,
 			tool_id::text,
 			tool_unit_id::text,
@@ -667,6 +707,71 @@ func (repository *PostgresRepository) ExpireHolds(
 	return count, nil
 }
 
+func (repository *PostgresRepository) ListDocumentsByClient(
+	ctx context.Context,
+	clientID string,
+	rentalID string,
+) ([]OrderDocument, error) {
+	rows, err := repository.database.Query(
+		ctx,
+		`SELECT d.id::text, d.order_number, d.document_type, d.title,
+		        d.storage_key, d.mime_type, d.created_at
+		 FROM order_documents AS d
+		 JOIN rental_requests AS rr ON rr.id = d.rental_request_id
+		 WHERE rr.id = $1::uuid AND rr.client_id = $2::uuid AND d.storage_key IS NOT NULL
+		 ORDER BY d.created_at, d.id`,
+		rentalID,
+		clientID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list order documents: %w", err)
+	}
+	defer rows.Close()
+	documents := make([]OrderDocument, 0)
+	for rows.Next() {
+		var document OrderDocument
+		var mimeType pgtype.Text
+		if err := rows.Scan(
+			&document.ID, &document.OrderNumber, &document.DocumentType,
+			&document.Title, &document.StorageKey, &mimeType, &document.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan order document: %w", err)
+		}
+		if mimeType.Valid {
+			document.MIMEType = &mimeType.String
+		}
+		document.CreatedAt = document.CreatedAt.UTC()
+		documents = append(documents, document)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate order documents: %w", err)
+	}
+	return documents, nil
+}
+
+func (repository *PostgresRepository) GetDocumentByClient(ctx context.Context, clientID, rentalID, documentID string) (OrderDocument, error) {
+	var document OrderDocument
+	var mimeType pgtype.Text
+	err := repository.database.QueryRow(ctx, `SELECT d.id::text, d.order_number, d.document_type, d.title,
+		d.storage_key, d.mime_type, d.created_at
+		FROM order_documents AS d
+		JOIN rental_requests AS rr ON rr.id=d.rental_request_id
+		WHERE rr.id=$1::uuid AND rr.client_id=$2::uuid AND d.id=$3::uuid`, rentalID, clientID, documentID).Scan(
+		&document.ID, &document.OrderNumber, &document.DocumentType, &document.Title,
+		&document.StorageKey, &mimeType, &document.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return OrderDocument{}, ErrDocumentNotFound
+	}
+	if err != nil {
+		return OrderDocument{}, fmt.Errorf("get order document: %w", err)
+	}
+	if mimeType.Valid {
+		document.MIMEType = &mimeType.String
+	}
+	document.CreatedAt = document.CreatedAt.UTC()
+	return document, nil
+}
+
 func getToolPricing(
 	ctx context.Context,
 	transaction pgx.Tx,
@@ -780,6 +885,7 @@ func scanRental(row rowScanner) (RentalRequest, error) {
 	var bitrixDealID pgtype.Text
 	if err := row.Scan(
 		&rental.ID,
+		&rental.OrderNumber,
 		&rental.ClientID,
 		&rental.ToolID,
 		&rental.ToolUnitID,
@@ -830,6 +936,7 @@ func getRentalByClientTx(
 		ctx,
 		`SELECT
 			id::text,
+			order_number,
 			client_id::text,
 			tool_id::text,
 			tool_unit_id::text,
@@ -872,3 +979,473 @@ func stringValue(value *string) string {
 	}
 	return *value
 }
+
+func (repository *PostgresRepository) GetActiveRentalForExtension(
+	ctx context.Context,
+	clientID string,
+	rentalID string,
+) (RentalRequest, error) {
+	rental, err := scanRental(repository.database.QueryRow(
+		ctx,
+		`SELECT
+			id::text,
+			COALESCE(order_number, ''),
+			client_id::text,
+			tool_id::text,
+			tool_unit_id::text,
+			start_date,
+			end_date,
+			rental_days,
+			rental_price,
+			deposit_amount,
+			delivery_cost,
+			total_amount,
+			delivery_method,
+			delivery_address,
+			status,
+			expires_at,
+			bitrix_deal_id,
+			created_at,
+			updated_at
+		 FROM rental_requests
+		 WHERE id = $1::uuid AND client_id = $2::uuid`,
+		rentalID,
+		clientID,
+	))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return RentalRequest{}, ErrRentalNotFound
+	}
+	if err != nil {
+		return RentalRequest{}, fmt.Errorf("get active rental for extension: %w", err)
+	}
+	switch rental.Status {
+	case StatusRented, StatusReady, StatusHandedToCourier, StatusAwaitingReturn:
+		return rental, nil
+	default:
+		return RentalRequest{}, ErrRentalNotActive
+	}
+}
+
+func (repository *PostgresRepository) CheckExtensionAvailability(
+	ctx context.Context,
+	toolUnitID string,
+	currentEndDate time.Time,
+	newEndDate time.Time,
+	currentRentalID string,
+	now time.Time,
+) (bool, error) {
+	var available bool
+	err := repository.database.QueryRow(
+		ctx,
+		`SELECT NOT EXISTS (
+			SELECT 1
+			FROM tool_holds AS h
+			WHERE
+				h.tool_unit_id = $1::uuid
+				AND h.rental_request_id != $2::uuid
+				AND h.status IN ('active', 'confirmed')
+				AND h.expires_at > $5
+				AND h.rental_period && daterange(($3::date + INTERVAL '1 day')::date, $4::date, '[]')
+		) AND NOT EXISTS (
+			SELECT 1
+			FROM rental_requests AS other
+			WHERE
+				other.tool_unit_id = $1::uuid
+				AND other.id != $2::uuid
+				AND other.status IN (
+					'pending_manager',
+					'awaiting_payment',
+					'paid',
+					'preparing',
+					'ready',
+					'handed_to_courier',
+					'rented',
+					'awaiting_return',
+					'inspection'
+				)
+				AND other.rental_period && daterange(($3::date + INTERVAL '1 day')::date, $4::date, '[]')
+		)`,
+		toolUnitID,
+		currentRentalID,
+		currentEndDate,
+		newEndDate,
+		now,
+	).Scan(&available)
+	if err != nil {
+		return false, fmt.Errorf("check extension availability: %w", err)
+	}
+	return available, nil
+}
+
+func (repository *PostgresRepository) CreateExtension(
+	ctx context.Context,
+	rentalID string,
+	previousEndDate time.Time,
+	newEndDate time.Time,
+	additionalDays int,
+	dailyPrice int64,
+	amount int64,
+	now time.Time,
+) (RentalExtension, error) {
+	var ext RentalExtension
+	var prevDate, nDate time.Time
+	var paidAt *time.Time
+	err := repository.database.QueryRow(
+		ctx,
+		`INSERT INTO rental_extensions (
+			rental_request_id,
+			previous_end_date,
+			new_end_date,
+			additional_days,
+			daily_price,
+			amount,
+			status,
+			created_at,
+			updated_at
+		)
+		VALUES ($1::uuid, $2::date, $3::date, $4, $5, $6, 'pending_payment', $7, $7)
+		RETURNING
+			id::text,
+			rental_request_id::text,
+			previous_end_date,
+			new_end_date,
+			additional_days,
+			daily_price,
+			amount,
+			status,
+			payment_id::text,
+			created_at,
+			updated_at,
+			paid_at`,
+		rentalID,
+		previousEndDate,
+		newEndDate,
+		additionalDays,
+		dailyPrice,
+		amount,
+		now,
+	).Scan(
+		&ext.ID,
+		&ext.RentalRequestID,
+		&prevDate,
+		&nDate,
+		&ext.AdditionalDays,
+		&ext.DailyPrice,
+		&ext.Amount,
+		&ext.Status,
+		&ext.PaymentID,
+		&ext.CreatedAt,
+		&ext.UpdatedAt,
+		&paidAt,
+	)
+	if err != nil {
+		return RentalExtension{}, fmt.Errorf("create rental extension: %w", err)
+	}
+	ext.PreviousEndDate = prevDate.Format(time.DateOnly)
+	ext.NewEndDate = nDate.Format(time.DateOnly)
+	ext.PaidAt = paidAt
+	return ext, nil
+}
+
+func (repository *PostgresRepository) GetExtension(
+	ctx context.Context,
+	extensionID string,
+) (RentalExtension, error) {
+	var ext RentalExtension
+	var prevDate, nDate time.Time
+	var paidAt *time.Time
+	err := repository.database.QueryRow(
+		ctx,
+		`SELECT
+			e.id::text,
+			e.rental_request_id::text,
+			e.previous_end_date,
+			e.new_end_date,
+			e.additional_days,
+			e.daily_price,
+			e.amount,
+			e.status,
+			e.payment_id::text,
+			p.confirmation_url,
+			e.created_at,
+			e.updated_at,
+			e.paid_at
+		 FROM rental_extensions AS e
+		 LEFT JOIN payments AS p ON p.id = e.payment_id
+		 WHERE e.id = $1::uuid`,
+		extensionID,
+	).Scan(
+		&ext.ID,
+		&ext.RentalRequestID,
+		&prevDate,
+		&nDate,
+		&ext.AdditionalDays,
+		&ext.DailyPrice,
+		&ext.Amount,
+		&ext.Status,
+		&ext.PaymentID,
+		&ext.ConfirmationURL,
+		&ext.CreatedAt,
+		&ext.UpdatedAt,
+		&paidAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return RentalExtension{}, errors.New("rental extension not found")
+	}
+	if err != nil {
+		return RentalExtension{}, fmt.Errorf("get rental extension: %w", err)
+	}
+	ext.PreviousEndDate = prevDate.Format(time.DateOnly)
+	ext.NewEndDate = nDate.Format(time.DateOnly)
+	ext.PaidAt = paidAt
+	return ext, nil
+}
+
+func (repository *PostgresRepository) ListExtensionsByRental(
+	ctx context.Context,
+	clientID string,
+	rentalID string,
+) ([]RentalExtension, error) {
+	rows, err := repository.database.Query(
+		ctx,
+		`SELECT
+			e.id::text,
+			e.rental_request_id::text,
+			e.previous_end_date,
+			e.new_end_date,
+			e.additional_days,
+			e.daily_price,
+			e.amount,
+			e.status,
+			e.payment_id::text,
+			p.confirmation_url,
+			e.created_at,
+			e.updated_at,
+			e.paid_at
+		 FROM rental_extensions AS e
+		 JOIN rental_requests AS rr ON rr.id = e.rental_request_id
+		 LEFT JOIN payments AS p ON p.id = e.payment_id
+		 WHERE e.rental_request_id = $1::uuid AND rr.client_id = $2::uuid
+		 ORDER BY e.created_at DESC`,
+		rentalID,
+		clientID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list rental extensions: %w", err)
+	}
+	defer rows.Close()
+
+	var result []RentalExtension
+	for rows.Next() {
+		var ext RentalExtension
+		var prevDate, nDate time.Time
+		var paidAt *time.Time
+		if err := rows.Scan(
+			&ext.ID,
+			&ext.RentalRequestID,
+			&prevDate,
+			&nDate,
+			&ext.AdditionalDays,
+			&ext.DailyPrice,
+			&ext.Amount,
+			&ext.Status,
+			&ext.PaymentID,
+			&ext.ConfirmationURL,
+			&ext.CreatedAt,
+			&ext.UpdatedAt,
+			&paidAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan rental extension: %w", err)
+		}
+		ext.PreviousEndDate = prevDate.Format(time.DateOnly)
+		ext.NewEndDate = nDate.Format(time.DateOnly)
+		ext.PaidAt = paidAt
+		result = append(result, ext)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate rental extensions: %w", err)
+	}
+	return result, nil
+}
+
+func (repository *PostgresRepository) UpdateExtensionPaymentID(
+	ctx context.Context,
+	extensionID string,
+	paymentID string,
+) error {
+	_, err := repository.database.Exec(
+		ctx,
+		`UPDATE rental_extensions
+		 SET payment_id = $2::uuid, updated_at = NOW()
+		 WHERE id = $1::uuid`,
+		extensionID,
+		paymentID,
+	)
+	return err
+}
+
+func (repository *PostgresRepository) SaveInspectionPhoto(
+	ctx context.Context,
+	photo InspectionPhoto,
+) (InspectionPhoto, error) {
+	var saved InspectionPhoto
+	err := repository.database.QueryRow(
+		ctx,
+		`INSERT INTO rental_inspection_photos (
+			rental_request_id,
+			phase,
+			photo_type,
+			storage_key,
+			file_name,
+			mime_type,
+			file_size,
+			comment
+		)
+		VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8)
+		ON CONFLICT (rental_request_id, phase, photo_type)
+		DO UPDATE SET
+			storage_key = EXCLUDED.storage_key,
+			file_name = EXCLUDED.file_name,
+			mime_type = EXCLUDED.mime_type,
+			file_size = EXCLUDED.file_size,
+			comment = EXCLUDED.comment,
+			created_at = NOW()
+		RETURNING
+			id::text,
+			rental_request_id::text,
+			phase,
+			photo_type,
+			storage_key,
+			file_name,
+			mime_type,
+			file_size,
+			COALESCE(comment, ''),
+			created_at`,
+		photo.RentalRequestID,
+		photo.Phase,
+		photo.PhotoType,
+		photo.StorageKey,
+		photo.FileName,
+		photo.MIMEType,
+		photo.FileSize,
+		photo.Comment,
+	).Scan(
+		&saved.ID,
+		&saved.RentalRequestID,
+		&saved.Phase,
+		&saved.PhotoType,
+		&saved.StorageKey,
+		&saved.FileName,
+		&saved.MIMEType,
+		&saved.FileSize,
+		&saved.Comment,
+		&saved.CreatedAt,
+	)
+	if err != nil {
+		return InspectionPhoto{}, fmt.Errorf("save inspection photo: %w", err)
+	}
+	return saved, nil
+}
+
+func (repository *PostgresRepository) ListInspectionPhotos(
+	ctx context.Context,
+	clientID string,
+	rentalID string,
+) ([]InspectionPhoto, error) {
+	rows, err := repository.database.Query(
+		ctx,
+		`SELECT
+			p.id::text,
+			p.rental_request_id::text,
+			p.phase,
+			p.photo_type,
+			p.storage_key,
+			p.file_name,
+			p.mime_type,
+			p.file_size,
+			COALESCE(p.comment, ''),
+			p.created_at
+		 FROM rental_inspection_photos AS p
+		 JOIN rental_requests AS rr ON rr.id = p.rental_request_id
+		 WHERE p.rental_request_id = $1::uuid AND rr.client_id = $2::uuid
+		 ORDER BY p.created_at ASC`,
+		rentalID,
+		clientID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list inspection photos: %w", err)
+	}
+	defer rows.Close()
+
+	var result []InspectionPhoto
+	for rows.Next() {
+		var p InspectionPhoto
+		if err := rows.Scan(
+			&p.ID,
+			&p.RentalRequestID,
+			&p.Phase,
+			&p.PhotoType,
+			&p.StorageKey,
+			&p.FileName,
+			&p.MIMEType,
+			&p.FileSize,
+			&p.Comment,
+			&p.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan inspection photo: %w", err)
+		}
+		result = append(result, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate inspection photos: %w", err)
+	}
+	return result, nil
+}
+
+func (repository *PostgresRepository) GetInspectionPhoto(
+	ctx context.Context,
+	clientID string,
+	rentalID string,
+	photoID string,
+) (InspectionPhoto, error) {
+	var p InspectionPhoto
+	err := repository.database.QueryRow(
+		ctx,
+		`SELECT
+			p.id::text,
+			p.rental_request_id::text,
+			p.phase,
+			p.photo_type,
+			p.storage_key,
+			p.file_name,
+			p.mime_type,
+			p.file_size,
+			COALESCE(p.comment, ''),
+			p.created_at
+		 FROM rental_inspection_photos AS p
+		 JOIN rental_requests AS rr ON rr.id = p.rental_request_id
+		 WHERE p.id = $1::uuid AND p.rental_request_id = $2::uuid AND ($3 = '' OR rr.client_id = $3::uuid)`,
+		photoID,
+		rentalID,
+		clientID,
+	).Scan(
+		&p.ID,
+		&p.RentalRequestID,
+		&p.Phase,
+		&p.PhotoType,
+		&p.StorageKey,
+		&p.FileName,
+		&p.MIMEType,
+		&p.FileSize,
+		&p.Comment,
+		&p.CreatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return InspectionPhoto{}, ErrPhotoNotFound
+	}
+	if err != nil {
+		return InspectionPhoto{}, fmt.Errorf("get inspection photo: %w", err)
+	}
+	return p, nil
+}
+

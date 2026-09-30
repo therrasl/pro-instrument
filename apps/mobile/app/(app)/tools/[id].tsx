@@ -145,7 +145,7 @@ export default function ToolDetailScreen() {
         </View>
         <View style={styles.priceRight}>
           <Text style={styles.deposit}>{formatMoney(tool.deposit_amount)}</Text>
-          <Text style={styles.caption}>возвратный залог</Text>
+          <Text style={styles.caption}>обеспечительный платеж</Text>
         </View>
       </View>
 
