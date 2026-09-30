@@ -452,7 +452,9 @@ func (repository *PostgresRepository) CreateReview(
 		return Review{ClientID: clientID, ReviewerID: reviewerID, Decision: decision, Reason: reason, CreatedAt: createdAt}, nil
 	}
 	if status != "pending_verification" && status != "documents_uploaded" && status != "phone_verified" && status != "profile_completed" && status != "verification_rejected" {
-		return Review{}, ErrReviewNotAllowed
+		if reviewerID != "bitrix_manager" {
+			return Review{}, ErrReviewNotAllowed
+		}
 	}
 
 	if decision == "approved" && reviewerID != "bitrix_manager" {

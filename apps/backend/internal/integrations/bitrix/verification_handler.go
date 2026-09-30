@@ -72,6 +72,7 @@ func (handler *VerificationWebhookHandler) handleVerification(
 			Decision  string `json:"decision"`
 			Reason    string `json:"reason"`
 			AuthToken string `json:"auth_token"`
+			Secret    string `json:"secret"`
 		}
 		if err := json.Unmarshal(body, &payload); err != nil {
 			writeJSON(response, http.StatusBadRequest, map[string]string{"error": "invalid json"})
@@ -81,7 +82,8 @@ func (handler *VerificationWebhookHandler) handleVerification(
 		phone = payload.Phone
 		rawDecision = payload.Decision
 		reason = payload.Reason
-		if !validAnyWebhookSecret(handler.secret, request.Header.Get(bitrixWebhookSecretHeader), payload.AuthToken) {
+		token := firstNonEmpty(payload.AuthToken, payload.Secret)
+		if !validAnyWebhookSecret(handler.secret, request.Header.Get(bitrixWebhookSecretHeader), token) {
 			writeJSON(response, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 			return
 		}
