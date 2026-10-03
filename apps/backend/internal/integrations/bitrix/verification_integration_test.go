@@ -83,7 +83,7 @@ func TestVerificationNotifierSendsTimelineCommentAndActivity(t *testing.T) {
 	}
 
 	client := NewHTTPClient(server.URL, time.Second)
-	notifier := NewVerificationNotifier(client, repository, "https://example.com")
+	notifier := NewVerificationNotifier(client, repository, "https://example.com", "test-secret")
 
 	docs := []verification.Document{
 		{ID: "doc-1", DocumentType: verification.DocumentPassportMain},
@@ -254,5 +254,45 @@ func TestDirectVerificationWebhookEndpoint(t *testing.T) {
 	}
 	if reviewer.rejectedClientID != "test-client-id" || reviewer.rejectedReason != "Нечеткое фото" {
 		t.Errorf("expected client rejected with reason, got %q / %q", reviewer.rejectedClientID, reviewer.rejectedReason)
+	}
+
+	// 4. Quick review: 1-click approval
+	approveToken := GenerateQuickReviewToken("test-secret", "test-client-id", "approved")
+	req = httptest.NewRequest("GET", "/api/v1/integrations/bitrix/quick-review?client_id=test-client-id&decision=approved&token="+approveToken, nil)
+	rec = httptest.NewRecorder()
+	reviewer.approvedClientID = ""
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200 OK for quick review approve, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "Документы одобрены") {
+		t.Errorf("expected success HTML, got %s", rec.Body.String())
+	}
+	if reviewer.approvedClientID != "test-client-id" {
+		t.Errorf("expected client approved via quick review, got %q", reviewer.approvedClientID)
+	}
+}
+
+func TestSplitFullName(t *testing.T) {
+	testCases := []struct {
+		input      string
+		phone      string
+		wantLast   string
+		wantFirst  string
+		wantSecond string
+	}{
+		{"", "+79991112233", "", "Клиент +79991112233", ""},
+		{"Иван", "+79991112233", "", "Иван", ""},
+		{"Иванов Иван", "+79991112233", "Иванов", "Иван", ""},
+		{"Смирнов Дмитрий Александрович", "+79991112233", "Смирнов", "Дмитрий", "Александрович"},
+		{"ван де Зандсхюлп Ботик", "+79991112233", "ван", "де", "Зандсхюлп Ботик"},
+	}
+
+	for _, tc := range testCases {
+		last, first, second := splitFullName(tc.input, tc.phone)
+		if last != tc.wantLast || first != tc.wantFirst || second != tc.wantSecond {
+			t.Errorf("splitFullName(%q) = (%q, %q, %q), want (%q, %q, %q)",
+				tc.input, last, first, second, tc.wantLast, tc.wantFirst, tc.wantSecond)
+		}
 	}
 }

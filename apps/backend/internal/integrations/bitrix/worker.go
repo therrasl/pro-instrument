@@ -221,7 +221,21 @@ func (worker *Worker) upsertContact(ctx context.Context, clientID string) error 
 	if err != nil {
 		return err
 	}
+	input := ContactInput{
+		FullName:       data.FullName,
+		Phone:          data.Phone,
+		BirthDate:      data.BirthDate,
+		Email:          data.Email,
+		ClientType:     data.ClientType,
+		CompanyName:    data.CompanyName,
+		INN:            data.INN,
+		KPP:            data.KPP,
+		OGRN:           data.OGRN,
+		LegalAddress:   data.LegalAddress,
+		CompanyContact: data.CompanyContact,
+	}
 	if data.ContactID != "" {
+		_ = worker.client.UpdateContact(ctx, data.ContactID, input)
 		return nil
 	}
 
@@ -229,11 +243,10 @@ func (worker *Worker) upsertContact(ctx context.Context, clientID string) error 
 	if err != nil {
 		return classifyClientError(err)
 	}
-	if !found {
-		contactID, err = worker.client.CreateContact(ctx, ContactInput{
-			FullName: data.FullName,
-			Phone:    data.Phone,
-		})
+	if found {
+		_ = worker.client.UpdateContact(ctx, contactID, input)
+	} else {
+		contactID, err = worker.client.CreateContact(ctx, input)
 		if err != nil {
 			return classifyClientError(err)
 		}
@@ -566,9 +579,11 @@ func (worker *Worker) dealFields(data RentalSyncData) map[string]any {
 		"TITLE":       dealTitle(businessNumber(data)),
 		"CATEGORY_ID": worker.settings.CategoryID,
 		"STAGE_ID":    worker.settings.Stages.Application,
-		"CONTACT_ID":  data.ContactID,
-		"CURRENCY_ID": "RUB",
-		"OPPORTUNITY": formatKopecks(data.TotalAmount),
+		"CONTACT_ID":          data.ContactID,
+		"SOURCE_ID":           "MOBILE_APP",
+		"SOURCE_DESCRIPTION":  "Мобильное приложение Pro-Instrument",
+		"CURRENCY_ID":         "RUB",
+		"OPPORTUNITY":         formatKopecks(data.TotalAmount),
 		"COMMENTS":    worker.dealComments(data),
 		"BEGINDATE":   startDateTime,
 		"CLOSEDATE":   endDateTime,

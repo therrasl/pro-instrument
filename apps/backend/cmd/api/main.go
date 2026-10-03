@@ -164,7 +164,7 @@ func run(logger *log.Logger) error {
 	if settings.Bitrix.Enabled {
 		bitrixClient := bitrix.NewHTTPClient(settings.Bitrix.BaseURL, settings.Bitrix.HTTPTimeout)
 		rentalsService.SetInspectionPhotoNotifier(bitrix.NewDealPhotoNotifier(bitrixClient, settings.YooKassa.PublicBaseURL))
-		verificationService.SetNotifier(bitrix.NewVerificationNotifier(bitrixClient, bitrixRepository, settings.YooKassa.PublicBaseURL))
+		verificationService.SetNotifier(bitrix.NewVerificationNotifier(bitrixClient, bitrixRepository, settings.YooKassa.PublicBaseURL, settings.Bitrix.WebhookSecret))
 
 		verificationWebhookHandler := bitrix.NewVerificationWebhookHandler(
 			bitrixRepository,
@@ -173,7 +173,7 @@ func run(logger *log.Logger) error {
 			settings.Bitrix.Enabled,
 			settings.Bitrix.WebhookSecret,
 			logger,
-		)
+		).SetBitrixClient(bitrixClient)
 		bitrixEventsHandler.SetVerificationHandler(verificationWebhookHandler)
 	}
 

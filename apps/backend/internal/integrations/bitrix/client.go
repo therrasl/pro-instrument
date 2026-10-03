@@ -43,18 +43,75 @@ func (client *HTTPClient) FindContactByPhone(
 	return decodeContactDuplicates(result)
 }
 
+func splitFullName(fullName, phone string) (lastName, firstName, secondName string) {
+	parts := strings.Fields(strings.TrimSpace(fullName))
+	switch len(parts) {
+	case 0:
+		return "", "Клиент " + phone, ""
+	case 1:
+		return "", parts[0], ""
+	case 2:
+		return parts[0], parts[1], ""
+	default:
+		return parts[0], parts[1], strings.Join(parts[2:], " ")
+	}
+}
+
+func buildContactFields(input ContactInput) map[string]any {
+	lastName, firstName, secondName := splitFullName(input.FullName, input.Phone)
+	fields := map[string]any{
+		"NAME":               firstName,
+		"LAST_NAME":          lastName,
+		"SECOND_NAME":        secondName,
+		"SOURCE_ID":          "MOBILE_APP",
+		"SOURCE_DESCRIPTION": "Мобильное приложение Pro-Instrument",
+		"PHONE": []map[string]string{{
+			"VALUE":      input.Phone,
+			"VALUE_TYPE": "MOBILE",
+		}},
+	}
+	if input.BirthDate != nil {
+		fields["BIRTHDATE"] = input.BirthDate.Format("2006-01-02")
+	}
+	if input.Email != "" {
+		fields["EMAIL"] = []map[string]string{{
+			"VALUE":      input.Email,
+			"VALUE_TYPE": "WORK",
+		}}
+	}
+	if input.ClientType == "legal_entity" || input.CompanyName != "" {
+		fields["COMPANY_TITLE"] = input.CompanyName
+		var b strings.Builder
+		b.WriteString("🏢 Юридическое лицо / Реквизиты:\n")
+		if input.CompanyName != "" {
+			b.WriteString("• Компания: " + input.CompanyName + "\n")
+		}
+		if input.INN != "" {
+			b.WriteString("• ИНН: " + input.INN + "\n")
+		}
+		if input.KPP != "" {
+			b.WriteString("• КПП: " + input.KPP + "\n")
+		}
+		if input.OGRN != "" {
+			b.WriteString("• ОГРН: " + input.OGRN + "\n")
+		}
+		if input.LegalAddress != "" {
+			b.WriteString("• Юр. адрес: " + input.LegalAddress + "\n")
+		}
+		if input.CompanyContact != "" {
+			b.WriteString("• Контактное лицо: " + input.CompanyContact + "\n")
+		}
+		fields["COMMENTS"] = b.String()
+	}
+	return fields
+}
+
 func (client *HTTPClient) CreateContact(
 	ctx context.Context,
 	input ContactInput,
 ) (string, error) {
 	result, err := client.call(ctx, "crm.contact.add", map[string]any{
-		"fields": map[string]any{
-			"NAME": input.FullName,
-			"PHONE": []map[string]string{{
-				"VALUE":      input.Phone,
-				"VALUE_TYPE": "MOBILE",
-			}},
-		},
+		"fields": buildContactFields(input),
 	})
 	if err != nil {
 		return "", err
@@ -64,6 +121,19 @@ func (client *HTTPClient) CreateContact(
 		return "", fmt.Errorf("decode created Bitrix contact id: %w", err)
 	}
 	return id, nil
+}
+
+func (client *HTTPClient) UpdateContact(
+	ctx context.Context,
+	contactID string,
+	input ContactInput,
+) error {
+	fields := buildContactFields(input)
+	_, err := client.call(ctx, "crm.contact.update", map[string]any{
+		"id":     contactID,
+		"fields": fields,
+	})
+	return err
 }
 
 func (client *HTTPClient) FindDealByRentalID(

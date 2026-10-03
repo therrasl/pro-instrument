@@ -17,6 +17,7 @@ const (
 type Client interface {
 	FindContactByPhone(context.Context, string) (string, bool, error)
 	CreateContact(context.Context, ContactInput) (string, error)
+	UpdateContact(context.Context, string, ContactInput) error
 	FindDealByRentalID(context.Context, string, int) (string, bool, error)
 	CreateDeal(context.Context, map[string]any) (string, error)
 	UpdateDeal(context.Context, string, map[string]any) error
@@ -29,8 +30,17 @@ type Client interface {
 }
 
 type ContactInput struct {
-	FullName string
-	Phone    string
+	FullName       string
+	Phone          string
+	BirthDate      *time.Time
+	Email          string
+	ClientType     string
+	CompanyName    string
+	INN            string
+	KPP            string
+	OGRN           string
+	LegalAddress   string
+	CompanyContact string
 }
 
 type ContactDetails struct {
@@ -137,8 +147,17 @@ type RentalSyncData struct {
 }
 
 type ClientSyncData struct {
-	ClientID  string
-	FullName  string
-	Phone     string
-	ContactID string
+	ClientID       string
+	FullName       string
+	Phone          string
+	ContactID      string
+	BirthDate      *time.Time
+	Email          string
+	ClientType     string
+	CompanyName    string
+	INN            string
+	KPP            string
+	OGRN           string
+	LegalAddress   string
+	CompanyContact string
 }

@@ -164,22 +164,50 @@ func (repository *PostgresRepository) GetClientSyncData(
 	clientID string,
 ) (ClientSyncData, error) {
 	var data ClientSyncData
+	var birthDate pgtype.Date
 	err := repository.database.QueryRow(
 		ctx,
 		`SELECT
 			id::text,
 			COALESCE(full_name, ''),
 			phone,
-			COALESCE(bitrix_contact_id, '')
+			COALESCE(bitrix_contact_id, ''),
+			birth_date,
+			COALESCE(email, ''),
+			COALESCE(client_type, 'individual'),
+			COALESCE(company_name, ''),
+			COALESCE(inn, ''),
+			COALESCE(kpp, ''),
+			COALESCE(ogrn, ''),
+			COALESCE(legal_address, ''),
+			COALESCE(company_contact, '')
 		 FROM clients
 		 WHERE id = $1::uuid`,
 		clientID,
-	).Scan(&data.ClientID, &data.FullName, &data.Phone, &data.ContactID)
+	).Scan(
+		&data.ClientID,
+		&data.FullName,
+		&data.Phone,
+		&data.ContactID,
+		&birthDate,
+		&data.Email,
+		&data.ClientType,
+		&data.CompanyName,
+		&data.INN,
+		&data.KPP,
+		&data.OGRN,
+		&data.LegalAddress,
+		&data.CompanyContact,
+	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ClientSyncData{}, fmt.Errorf("Bitrix client %s not found", clientID)
 	}
 	if err != nil {
 		return ClientSyncData{}, fmt.Errorf("get Bitrix client sync data: %w", err)
+	}
+	if birthDate.Valid {
+		t := birthDate.Time
+		data.BirthDate = &t
 	}
 	return data, nil
 }
