@@ -41,12 +41,18 @@ type RentalService interface {
 }
 
 type Handler struct {
-	service RentalService
-	logger  *log.Logger
+	service           RentalService
+	inspectionHandler *InspectionHandler
+	logger            *log.Logger
 }
 
 func NewHandler(service RentalService, logger *log.Logger) *Handler {
 	return &Handler{service: service, logger: logger}
+}
+
+func (handler *Handler) SetInspectionHandler(ih *InspectionHandler) *Handler {
+	handler.inspectionHandler = ih
+	return handler
 }
 
 func (handler *Handler) Register(
@@ -105,6 +111,9 @@ func (handler *Handler) Register(
 		"GET /api/v1/rentals/{id}/photos/{photoID}",
 		http.HandlerFunc(handler.getPhoto),
 	)
+	if handler.inspectionHandler != nil {
+		handler.inspectionHandler.Register(mux)
+	}
 }
 
 func (handler *Handler) downloadDocument(response http.ResponseWriter, request *http.Request) {

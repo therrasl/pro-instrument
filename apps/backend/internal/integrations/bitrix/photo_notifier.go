@@ -11,17 +11,20 @@ import (
 type DealPhotoNotifier struct {
 	client  Client
 	baseURL string
+	secret  string
 }
 
-func NewDealPhotoNotifier(client Client, baseURL string) *DealPhotoNotifier {
+func NewDealPhotoNotifier(client Client, baseURL string, secret string) *DealPhotoNotifier {
 	return &DealPhotoNotifier{
 		client:  client,
 		baseURL: strings.TrimRight(baseURL, "/"),
+		secret:  strings.TrimSpace(secret),
 	}
 }
 
 func (notifier *DealPhotoNotifier) NotifyInspectionPhotos(
 	ctx context.Context,
+	rentalID string,
 	dealID string,
 	phase string,
 	orderNumber string,
@@ -48,6 +51,10 @@ func (notifier *DealPhotoNotifier) NotifyInspectionPhotos(
 	builder.WriteString(fmt.Sprintf("📸 Фотофиксация инструмента (%s)\n", phaseTitle))
 	if orderNumber != "" {
 		builder.WriteString(fmt.Sprintf("Заказ: %s\n", orderNumber))
+	}
+	if notifier.secret != "" && rentalID != "" {
+		inspectionURL := fmt.Sprintf("%s/api/v1/rentals/%s/inspection-view?token=%s", notifier.baseURL, rentalID, rentals.GenerateInspectionToken(notifier.secret, rentalID))
+		builder.WriteString(fmt.Sprintf("\n🔍 Сравнить фото Выдача vs Возврат и решение по залогу:\n%s\n\n", inspectionURL))
 	}
 	builder.WriteString("Загруженные фотографии:\n")
 

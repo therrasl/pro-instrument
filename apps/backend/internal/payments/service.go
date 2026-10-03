@@ -78,6 +78,7 @@ type Repository interface {
 	RejectEvent(context.Context, string, string, time.Time) error
 	GetDepositForRefund(context.Context, string) (DepositRefundData, error)
 	RecordDepositRefund(context.Context, string, int64, string, json.RawMessage, time.Time) error
+	RecordDepositSettlement(context.Context, string, int64, int64, string, json.RawMessage, string, time.Time) error
 	PrepareExtensionPayment(
 		context.Context,
 		string,
@@ -458,6 +459,140 @@ func (service *Service) RefundDeposit(
 		RefundID:   refund.ID,
 		Amount:     refundAmount,
 		Status:     refund.Status,
+		RefundedAt: now,
+	}, nil
+}
+
+func (service *Service) SettleDeposit(
+	ctx context.Context,
+	rentalID string,
+	refundAmount int64,
+	withholdAmount int64,
+	reason string,
+) (RefundResult, error) {
+	now := service.now().UTC()
+
+	deposit, err := service.repository.GetDepositForRefund(ctx, rentalID)
+	if err != nil {
+		return RefundResult{}, err
+	}
+
+	if deposit.DepositStatus == "refunded" || deposit.DepositStatus == "withheld" || deposit.RefundableAmount <= 0 {
+		return RefundResult{
+			DepositID:  deposit.DepositID,
+			PaymentID:  deposit.PaymentID,
+			Amount:     0,
+			Status:     "already_settled",
+			RefundedAt: now,
+		}, nil
+	}
+
+	if refundAmount < 0 || withholdAmount < 0 {
+		return RefundResult{}, errors.New("negative refund or withhold amount")
+	}
+	if refundAmount+withholdAmount > deposit.RefundableAmount {
+		return RefundResult{}, ErrRefundExceedsDeposit
+	}
+
+	refundID := ""
+	var rawPayload json.RawMessage
+
+	if refundAmount > 0 {
+		if !service.enabled {
+			refundID = fmt.Sprintf("sim_refund_%d", now.UnixNano())
+		} else {
+			if deposit.PaymentStatus != StatusSucceeded || deposit.ProviderPaymentID == "" {
+				return RefundResult{}, ErrDepositNotPaid
+			}
+
+			idempotencyKey := fmt.Sprintf("settle:%s:%d:%d", deposit.DepositID, refundAmount, withholdAmount)
+			description := "Возврат обеспечительного платежа"
+			if deposit.OrderNumber != "" {
+				description = fmt.Sprintf("Возврат обеспечительного платежа по заказу %s", deposit.OrderNumber)
+			}
+			if reason != "" {
+				description += ": " + reason
+			}
+			if len(description) > 250 {
+				description = description[:250]
+			}
+
+			req := yookassa.CreateRefundRequest{
+				PaymentID: deposit.ProviderPaymentID,
+				Amount: yookassa.Money{
+					Value:    formatKopecks(refundAmount),
+					Currency: "RUB",
+				},
+				Description: description,
+			}
+
+			if service.receiptsEnabled {
+				customer := yookassa.ReceiptCustomer{
+					Email: deposit.ClientEmail,
+					Phone: deposit.ClientPhone,
+				}
+				vatCode := service.vatCode
+				if vatCode <= 0 {
+					vatCode = 1
+				}
+				req.Receipt = &yookassa.Receipt{
+					Customer:      customer,
+					TaxSystemCode: service.taxSystemCode,
+					Items: []yookassa.ReceiptItem{
+						{
+							Description:    "Возврат: Обеспечительный платеж",
+							Quantity:       "1.00",
+							Amount: yookassa.Money{
+								Value:    formatKopecks(refundAmount),
+								Currency: "RUB",
+							},
+							VATCode:        vatCode,
+							PaymentMode:    "full_payment",
+							PaymentSubject: "payment",
+						},
+					},
+				}
+			}
+
+			refund, err := service.provider.CreateRefund(ctx, idempotencyKey, req)
+			if err != nil {
+				service.logger.Printf("YooKassa refund failed for rental %s: %v", rentalID, err)
+				return RefundResult{}, fmt.Errorf("provider refund failed: %w", err)
+			}
+			refundID = refund.ID
+			rawPayload = refund.Raw
+		}
+	}
+
+	if err := service.repository.RecordDepositSettlement(
+		ctx,
+		deposit.DepositID,
+		refundAmount,
+		withholdAmount,
+		refundID,
+		rawPayload,
+		reason,
+		now,
+	); err != nil {
+		service.logger.Printf("record deposit settlement failed for rental %s: %v", rentalID, err)
+		return RefundResult{}, fmt.Errorf("record deposit settlement: %w", err)
+	}
+
+	service.logger.Printf(
+		"Deposit settled: rental=%s deposit=%s refund_amount=%s withhold_amount=%s reason=%s",
+		rentalID,
+		deposit.DepositID,
+		formatKopecks(refundAmount),
+		formatKopecks(withholdAmount),
+		reason,
+	)
+
+	return RefundResult{
+		DepositID:  deposit.DepositID,
+		PaymentID:  deposit.PaymentID,
+		RefundID:   refundID,
+		Amount:     refundAmount,
+		Status:     "settled",
 		RefundedAt: now,
 	}, nil
 }

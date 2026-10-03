@@ -1739,6 +1739,130 @@ func (repository *PostgresRepository) RecordDepositRefund(
 	return transaction.Commit(ctx)
 }
 
+func (repository *PostgresRepository) RecordDepositSettlement(
+	ctx context.Context,
+	depositID string,
+	refundAmount int64,
+	withholdAmount int64,
+	refundID string,
+	providerPayload json.RawMessage,
+	reason string,
+	now time.Time,
+) error {
+	transaction, err := repository.database.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin record deposit settlement: %w", err)
+	}
+	defer func() {
+		_ = transaction.Rollback(ctx)
+	}()
+
+	var rentalID string
+	var paymentID string
+	var originalAmount int64
+	var currentRefundable int64
+	var currentRefunded int64
+	var currentWithheld int64
+	err = transaction.QueryRow(
+		ctx,
+		`SELECT rental_request_id::text, payment_id::text, original_amount, refundable_amount, refunded_amount, withheld_amount
+		 FROM deposits
+		 WHERE id = $1::uuid
+		 FOR UPDATE`,
+		depositID,
+	).Scan(&rentalID, &paymentID, &originalAmount, &currentRefundable, &currentRefunded, &currentWithheld)
+	if err != nil {
+		return fmt.Errorf("lock deposit for settlement: %w", err)
+	}
+
+	totalSettled := refundAmount + withholdAmount
+	if totalSettled > currentRefundable {
+		return errors.New("settlement amount exceeds refundable deposit")
+	}
+
+	newRefundable := currentRefundable - totalSettled
+	newRefunded := currentRefunded + refundAmount
+	newWithheld := currentWithheld + withholdAmount
+
+	newStatus := "partially_refunded"
+	if newRefundable == 0 {
+		if newWithheld > 0 && newRefunded == 0 {
+			newStatus = "withheld"
+		} else if newRefunded > 0 && newWithheld == 0 {
+			newStatus = "refunded"
+		} else {
+			newStatus = "partially_refunded"
+		}
+	}
+
+	_, err = transaction.Exec(
+		ctx,
+		`UPDATE deposits
+		 SET
+			refundable_amount = $2,
+			refunded_amount = $3,
+			withheld_amount = $4,
+			status = $5,
+			updated_at = $6
+		 WHERE id = $1::uuid`,
+		depositID,
+		newRefundable,
+		newRefunded,
+		newWithheld,
+		newStatus,
+		now,
+	)
+	if err != nil {
+		return fmt.Errorf("update deposit settlement: %w", err)
+	}
+
+	payloadToStore := providerPayload
+	if len(payloadToStore) == 0 {
+		payloadToStore = json.RawMessage("{}")
+	}
+
+	_, err = transaction.Exec(
+		ctx,
+		`INSERT INTO payment_audit_logs (
+			payment_id,
+			rental_request_id,
+			action,
+			actor_type,
+			actor_id,
+			details,
+			created_at
+		)
+		VALUES (
+			$1::uuid,
+			$2::uuid,
+			'deposit.settled',
+			'system',
+			'manager',
+			jsonb_build_object(
+				'refund_id', $3::text,
+				'refund_amount', $4::bigint,
+				'withheld_amount', $5::bigint,
+				'reason', $6::text,
+				'payload', $7::jsonb
+			),
+			$8
+		)`,
+		paymentID,
+		rentalID,
+		refundID,
+		refundAmount,
+		withholdAmount,
+		reason,
+		payloadToStore,
+		now,
+	)
+	if err != nil {
+		return fmt.Errorf("audit deposit settlement: %w", err)
+	}
+
+	return transaction.Commit(ctx)
+}
+
 func stringValue(value *string) string {
 	if value == nil {
 		return ""

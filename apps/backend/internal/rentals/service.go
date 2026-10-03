@@ -38,7 +38,7 @@ type ExtensionPaymentCreator interface {
 }
 
 type InspectionPhotoNotifier interface {
-	NotifyInspectionPhotos(ctx context.Context, dealID string, phase string, orderNumber string, photos []InspectionPhoto) error
+	NotifyInspectionPhotos(ctx context.Context, rentalID string, dealID string, phase string, orderNumber string, photos []InspectionPhoto) error
 }
 
 type Repository interface {
@@ -628,7 +628,7 @@ func (service *Service) UploadInspectionPhoto(
 		for i := range photos {
 			photos[i].URL = fmt.Sprintf("/api/v1/rentals/%s/photos/%s", rentalID, photos[i].ID)
 		}
-		_ = service.photoNotifier.NotifyInspectionPhotos(ctx, *rental.BitrixDealID, phase, rental.OrderNumber, photos)
+		_ = service.photoNotifier.NotifyInspectionPhotos(ctx, rentalID, *rental.BitrixDealID, phase, rental.OrderNumber, photos)
 	}
 
 	return saved, nil

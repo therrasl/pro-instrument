@@ -168,3 +168,25 @@ type InspectionPhoto struct {
 	CreatedAt       time.Time `json:"created_at"`
 }
 
+type InspectionViewData struct {
+	RentalID         string                     `json:"rental_id"`
+	OrderNumber      string                     `json:"order_number"`
+	Status           string                     `json:"status"`
+	ToolName         string                     `json:"tool_name"`
+	InventoryNumber  string                     `json:"inventory_number"`
+	ClientName       string                     `json:"client_name"`
+	ClientPhone      string                     `json:"client_phone"`
+	StartDate        string                     `json:"start_date"`
+	EndDate          string                     `json:"end_date"`
+	RentalDays       int                        `json:"rental_days"`
+	RentalPrice      int64                      `json:"rental_price"`
+	DepositAmount    int64                      `json:"deposit_amount"`
+	DepositStatus    string                     `json:"deposit_status"`
+	RefundableAmount int64                      `json:"refundable_amount"`
+	RefundedAmount   int64                      `json:"refunded_amount"`
+	WithheldAmount   int64                      `json:"withheld_amount"`
+	BitrixDealID     string                     `json:"bitrix_deal_id"`
+	HandoverPhotos   map[string]InspectionPhoto `json:"handover_photos"`
+	ReturnPhotos     map[string]InspectionPhoto `json:"return_photos"`
+}
+

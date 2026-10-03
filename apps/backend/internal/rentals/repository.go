@@ -1449,3 +1449,204 @@ func (repository *PostgresRepository) GetInspectionPhoto(
 	return p, nil
 }
 
+func (repository *PostgresRepository) GetInspectionViewData(
+	ctx context.Context,
+	rentalID string,
+) (InspectionViewData, error) {
+	var data InspectionViewData
+	var startDate, endDate time.Time
+	var dealID *string
+
+	err := repository.database.QueryRow(
+		ctx,
+		`SELECT
+			rr.id::text,
+			rr.order_number,
+			rr.status,
+			COALESCE(t.name, 'Инструмент'),
+			COALESCE(tu.inventory_number, ''),
+			COALESCE(c.full_name, 'Без имени'),
+			c.phone,
+			rr.start_date,
+			rr.end_date,
+			rr.rental_days,
+			rr.rental_price,
+			rr.deposit_amount,
+			COALESCE(d.status, 'none'),
+			COALESCE(d.refundable_amount, 0),
+			COALESCE(d.refunded_amount, 0),
+			COALESCE(d.withheld_amount, 0),
+			rr.bitrix_deal_id
+		 FROM rental_requests AS rr
+		 JOIN clients AS c ON c.id = rr.client_id
+		 LEFT JOIN tool_units AS tu ON tu.id = rr.tool_unit_id
+		 LEFT JOIN tools AS t ON t.id = tu.tool_id
+		 LEFT JOIN deposits AS d ON d.rental_request_id = rr.id
+		 WHERE rr.id = $1::uuid`,
+		rentalID,
+	).Scan(
+		&data.RentalID,
+		&data.OrderNumber,
+		&data.Status,
+		&data.ToolName,
+		&data.InventoryNumber,
+		&data.ClientName,
+		&data.ClientPhone,
+		&startDate,
+		&endDate,
+		&data.RentalDays,
+		&data.RentalPrice,
+		&data.DepositAmount,
+		&data.DepositStatus,
+		&data.RefundableAmount,
+		&data.RefundedAmount,
+		&data.WithheldAmount,
+		&dealID,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return InspectionViewData{}, ErrRentalNotFound
+	}
+	if err != nil {
+		return InspectionViewData{}, fmt.Errorf("get inspection view data: %w", err)
+	}
+
+	data.StartDate = startDate.Format(time.DateOnly)
+	data.EndDate = endDate.Format(time.DateOnly)
+	if dealID != nil {
+		data.BitrixDealID = *dealID
+	}
+
+	data.HandoverPhotos = make(map[string]InspectionPhoto)
+	data.ReturnPhotos = make(map[string]InspectionPhoto)
+
+	rows, err := repository.database.Query(
+		ctx,
+		`SELECT
+			p.id::text,
+			p.rental_request_id::text,
+			p.phase,
+			p.photo_type,
+			p.storage_key,
+			p.file_name,
+			p.mime_type,
+			p.file_size,
+			COALESCE(p.comment, ''),
+			p.created_at
+		 FROM rental_inspection_photos AS p
+		 WHERE p.rental_request_id = $1::uuid
+		 ORDER BY p.created_at ASC`,
+		rentalID,
+	)
+	if err != nil {
+		return data, fmt.Errorf("list inspection photos for view: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var p InspectionPhoto
+		if err := rows.Scan(
+			&p.ID,
+			&p.RentalRequestID,
+			&p.Phase,
+			&p.PhotoType,
+			&p.StorageKey,
+			&p.FileName,
+			&p.MIMEType,
+			&p.FileSize,
+			&p.Comment,
+			&p.CreatedAt,
+		); err != nil {
+			return data, fmt.Errorf("scan photo for view: %w", err)
+		}
+		p.URL = fmt.Sprintf("/api/v1/rentals/%s/photos/%s", rentalID, p.ID)
+		if p.Phase == PhotoPhaseHandover {
+			data.HandoverPhotos[p.PhotoType] = p
+		} else if p.Phase == PhotoPhaseReturn {
+			data.ReturnPhotos[p.PhotoType] = p
+		}
+	}
+
+	return data, rows.Err()
+}
+
+func (repository *PostgresRepository) UpdateRentalStatus(
+	ctx context.Context,
+	rentalID string,
+	targetStatus string,
+	actorType string,
+	actorID string,
+	now time.Time,
+) error {
+	transaction, err := repository.database.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin update rental status: %w", err)
+	}
+	defer func() {
+		_ = transaction.Rollback(ctx)
+	}()
+
+	var currentStatus string
+	err = transaction.QueryRow(
+		ctx,
+		`SELECT status FROM rental_requests WHERE id = $1::uuid FOR UPDATE`,
+		rentalID,
+	).Scan(&currentStatus)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrRentalNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("lock rental for status update: %w", err)
+	}
+
+	if currentStatus == targetStatus {
+		return transaction.Commit(ctx)
+	}
+
+	if _, err := transaction.Exec(
+		ctx,
+		`UPDATE rental_requests SET status = $2, updated_at = $3 WHERE id = $1::uuid`,
+		rentalID,
+		targetStatus,
+		now,
+	); err != nil {
+		return fmt.Errorf("update rental status: %w", err)
+	}
+
+	if targetStatus == StatusRejected || targetStatus == StatusCompleted {
+		if _, err := transaction.Exec(
+			ctx,
+			`UPDATE tool_holds
+			 SET status = 'released', updated_at = $2
+			 WHERE rental_request_id = $1::uuid
+			   AND status IN ('active', 'confirmed')`,
+			rentalID,
+			now,
+		); err != nil {
+			return fmt.Errorf("release rental hold: %w", err)
+		}
+	}
+
+	if _, err := transaction.Exec(
+		ctx,
+		`INSERT INTO rental_status_history (
+			rental_request_id,
+			from_status,
+			to_status,
+			actor_type,
+			actor_id,
+			created_at
+		)
+		VALUES ($1::uuid, $2, $3, $4, $5, $6)`,
+		rentalID,
+		currentStatus,
+		targetStatus,
+		actorType,
+		actorID,
+		now,
+	); err != nil {
+		return fmt.Errorf("insert rental status history: %w", err)
+	}
+
+	return transaction.Commit(ctx)
+}
+

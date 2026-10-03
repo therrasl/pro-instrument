@@ -52,7 +52,7 @@ type fakeInspectionPhotoNotifier struct {
 	notifiedDeals []string
 }
 
-func (f *fakeInspectionPhotoNotifier) NotifyInspectionPhotos(ctx context.Context, dealID string, phase string, orderNumber string, photos []InspectionPhoto) error {
+func (f *fakeInspectionPhotoNotifier) NotifyInspectionPhotos(ctx context.Context, rentalID string, dealID string, phase string, orderNumber string, photos []InspectionPhoto) error {
 	f.notifiedDeals = append(f.notifiedDeals, dealID)
 	return nil
 }

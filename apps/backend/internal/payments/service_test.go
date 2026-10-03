@@ -446,6 +446,19 @@ func (repository *repositoryStub) RecordDepositRefund(
 	return nil
 }
 
+func (repository *repositoryStub) RecordDepositSettlement(
+	_ context.Context,
+	depositID string,
+	refundAmount int64,
+	withholdAmount int64,
+	refundID string,
+	providerPayload json.RawMessage,
+	reason string,
+	now time.Time,
+) error {
+	return nil
+}
+
 func preparedPayment() Payment {
 	return Payment{
 		ID:                "payment-1",
@@ -609,4 +622,82 @@ func (r *alreadyRefundedRepoStub) GetDepositForRefund(
 		DepositStatus:    "refunded",
 		PaymentStatus:    StatusSucceeded,
 	}, nil
+}
+
+func TestSettleDepositPartialWithhold(t *testing.T) {
+	provider := &providerStub{}
+	repository := &repositoryStub{}
+	service := NewService(
+		repository,
+		provider,
+		true,
+		"https://app.example.test/return",
+		false,
+		time.Second,
+		5,
+		log.New(io.Discard, "", 0),
+	)
+
+	// Deposit is 200000 kopecks (2000 RUB).
+	// Refund 150000 kopecks (1500 RUB), withhold 50000 kopecks (500 RUB).
+	result, err := service.SettleDeposit(context.Background(), "rental-1", 150000, 50000, "грязный инструмент")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Amount != 150000 {
+		t.Fatalf("expected refund amount 150000, got %d", result.Amount)
+	}
+	if result.Status != "settled" {
+		t.Fatalf("expected settled status, got %s", result.Status)
+	}
+}
+
+func TestSettleDepositFullWithhold(t *testing.T) {
+	provider := &providerStub{}
+	repository := &repositoryStub{}
+	service := NewService(
+		repository,
+		provider,
+		true,
+		"https://app.example.test/return",
+		false,
+		time.Second,
+		5,
+		log.New(io.Discard, "", 0),
+	)
+
+	// Refund 0, withhold 200000 kopecks (2000 RUB).
+	result, err := service.SettleDeposit(context.Background(), "rental-1", 0, 200000, "ущерб")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Amount != 0 {
+		t.Fatalf("expected refund amount 0, got %d", result.Amount)
+	}
+	if result.Status != "settled" {
+		t.Fatalf("expected settled status, got %s", result.Status)
+	}
+}
+
+func TestSettleDepositExceedsDeposit(t *testing.T) {
+	provider := &providerStub{}
+	repository := &repositoryStub{}
+	service := NewService(
+		repository,
+		provider,
+		true,
+		"https://app.example.test/return",
+		false,
+		time.Second,
+		5,
+		log.New(io.Discard, "", 0),
+	)
+
+	// Deposit is 200000 kopecks. Total 150000 + 100000 = 250000 > 200000 -> error
+	_, err := service.SettleDeposit(context.Background(), "rental-1", 150000, 100000, "слишком много")
+	if !errors.Is(err, ErrRefundExceedsDeposit) {
+		t.Fatalf("expected ErrRefundExceedsDeposit, got: %v", err)
+	}
 }

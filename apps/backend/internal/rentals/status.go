@@ -230,7 +230,7 @@ func validStatusTransition(currentStatus string, targetStatus string) bool {
 	case StatusRented:
 		return targetStatus == StatusAwaitingReturn
 	case StatusAwaitingReturn:
-		return targetStatus == StatusInspection
+		return targetStatus == StatusInspection || targetStatus == StatusCompleted
 	case StatusInspection:
 		return targetStatus == StatusCompleted
 	default:
