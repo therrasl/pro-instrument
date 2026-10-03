@@ -136,6 +136,24 @@ func (client *HTTPClient) UpdateContact(
 	return err
 }
 
+func (client *HTTPClient) SetContactVerificationStatus(
+	ctx context.Context,
+	contactID string,
+	verified bool,
+) error {
+	val := "300"
+	if !verified {
+		val = "302"
+	}
+	_, err := client.call(ctx, "crm.contact.update", map[string]any{
+		"id": contactID,
+		"fields": map[string]any{
+			"UF_CRM_1786619870585": val,
+		},
+	})
+	return err
+}
+
 func (client *HTTPClient) FindDealByRentalID(
 	ctx context.Context,
 	rentalID string,

@@ -134,6 +134,7 @@ button:hover { background: #dc2626; }
 			_ = handler.pushNotifier.NotifyVerificationApproved(request.Context(), clientID)
 		}
 		if handler.bitrixClient != nil && syncData.ContactID != "" {
+			_ = handler.bitrixClient.SetContactVerificationStatus(request.Context(), syncData.ContactID, true)
 			_ = handler.bitrixClient.AddContactComment(request.Context(), syncData.ContactID, "✅ Документы клиента ОДОБРЕНЫ менеджером в 1 клик.")
 		}
 
@@ -182,6 +183,7 @@ p { color: #475569; font-size: 0.95rem; line-height: 1.5; margin: 0.5rem 0; }
 		_ = handler.pushNotifier.NotifyVerificationRejected(request.Context(), clientID, reason)
 	}
 	if handler.bitrixClient != nil && syncData.ContactID != "" {
+		_ = handler.bitrixClient.SetContactVerificationStatus(request.Context(), syncData.ContactID, false)
 		_ = handler.bitrixClient.AddContactComment(request.Context(), syncData.ContactID, fmt.Sprintf("❌ Документы клиента ОТКЛОНЕНЫ менеджером в 1 клик.\nПричина: %s", reason))
 	}
 

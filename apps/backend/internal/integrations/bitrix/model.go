@@ -27,6 +27,7 @@ type Client interface {
 	AddDealComment(context.Context, string, string) error
 	AddContactComment(context.Context, string, string) error
 	AddContactActivity(context.Context, string, string, string, time.Time) error
+	SetContactVerificationStatus(context.Context, string, bool) error
 }
 
 type ContactInput struct {
